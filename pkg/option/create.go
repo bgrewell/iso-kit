@@ -1,5 +1,7 @@
 package option
 
+import "github.com/bgrewell/iso-kit/pkg/logging"
+
 // ISOType represents the type of ISO image
 type ISOType int
 
@@ -13,6 +15,7 @@ type CreateOptions struct {
 	Preparer      string
 	RootDir       string
 	JolietEnabled bool
+	Logger        *logging.Logger
 }
 
 type CreateOption func(*CreateOptions)
@@ -38,5 +41,12 @@ func WithRootDir(rootDir string) CreateOption {
 func WithJolietEnabled(jolietEnabled bool) CreateOption {
 	return func(o *CreateOptions) {
 		o.JolietEnabled = jolietEnabled
+	}
+}
+
+// WithEnableLogging is a temp fix for the fact that we have separate options with helper functions in the same package
+func WithEnableLogging(logger *logging.Logger) CreateOption {
+	return func(o *CreateOptions) {
+		o.Logger = logger
 	}
 }

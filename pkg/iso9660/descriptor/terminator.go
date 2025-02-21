@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/bgrewell/iso-kit/pkg/consts"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/directory"
+	"github.com/bgrewell/iso-kit/pkg/logging"
 	"time"
 )
 
@@ -82,6 +83,8 @@ func (d *VolumeDescriptorSetTerminator) Unmarshal(data [consts.ISO9660_SECTOR_SI
 type VolumeDescriptorSetTerminatorBody struct {
 	// Reserved for future standardization
 	Reserved [TERMINATOR_RESERVED_SIZE]byte `json:"reserved"`
+	// Logger
+	Logger *logging.Logger
 }
 
 // VolumeIdentifier returns the volume identifier.

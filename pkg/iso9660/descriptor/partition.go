@@ -3,6 +3,7 @@ package descriptor
 import (
 	"github.com/bgrewell/iso-kit/pkg/consts"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/directory"
+	"github.com/bgrewell/iso-kit/pkg/logging"
 	"time"
 )
 
@@ -115,6 +116,8 @@ type VolumePartitionDescriptorBody struct {
 	VolumePartitionSize uint32 `json:"volume_partition_size"`
 	// System Use Area
 	SystemUse [PARTITION_SYSTEM_USE_SIZE]byte `json:"system_use"`
+	// Logger
+	Logger *logging.Logger
 }
 
 func (d *VolumePartitionDescriptor) Marshal() ([consts.ISO9660_SECTOR_SIZE]byte, error) {

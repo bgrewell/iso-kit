@@ -8,12 +8,13 @@ import (
 	"github.com/bgrewell/iso-kit/pkg/iso9660/boot"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/descriptor"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/directory"
+	"github.com/bgrewell/iso-kit/pkg/iso9660/info"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/parser"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/pathtable"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/systemarea"
+	"github.com/bgrewell/iso-kit/pkg/logging"
 	"github.com/bgrewell/iso-kit/pkg/option"
 	"github.com/bgrewell/iso-kit/pkg/version"
-	"github.com/go-logr/logr"
 	"io"
 	"os"
 	"path/filepath"
@@ -37,12 +38,14 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 		PreferJoliet:               false,
 		BootFileExtractLocation:    "[BOOT]",
 		ExtractionProgressCallback: emptyCallback,
-		Logger:                     logr.Discard(),
+		Logger:                     logging.DefaultLogger(),
 	}
 
 	for _, opt := range opts {
 		opt(openOptions)
 	}
+
+	layout := info.NewISOLayout()
 
 	// Read the System Area
 	saBuf := [consts.ISO9660_SECTOR_SIZE * consts.ISO9660_SYSTEM_AREA_SECTORS]byte{}
@@ -52,9 +55,11 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 	sa := systemarea.SystemArea{
 		Contents: saBuf,
 	}
+	layout.SystemAreaOffset = 0
+	layout.SystemAreaLength = consts.ISO9660_SYSTEM_AREA_SECTORS * consts.ISO9660_SECTOR_SIZE
 
 	// Create a parser
-	p := parser.NewParser(isoReader, openOptions)
+	p := parser.NewParser(isoReader, layout, openOptions)
 
 	// Read the boot record
 	bootRecord, err := p.GetBootRecord()
@@ -88,6 +93,9 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Mark the end of the volume descriptors
+	_, _ = p.GetVolumeDescriptorSetTerminator()
 
 	// Handle walking the pvd directory records
 	pvdDirectoryRecords, err := p.WalkDirectoryRecords(pvd.RootDirectoryRecord)
@@ -157,6 +165,8 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 		filesystemEntries:      filesystemEntries,
 		activeVD:               activeVD,
 		elTorito:               et,
+		layout:                 layout,
+		logger:                 openOptions.Logger,
 	}
 
 	return iso, nil
@@ -265,12 +275,14 @@ func Create(name string, opts ...option.CreateOption) (*ISO9660, error) {
 		pvd:           &pvd,
 		svds:          svds,
 		partitionvds:  pvds,
+		logger:        createOptions.Logger,
 	}
 
 	return iso, nil
 }
 
 // ISO9660 represents an ISO9660 filesystem.
+// TODO: Volume Descriptors should be replaced with a Volume Descriptor Set
 type ISO9660 struct {
 	// ISO Reader
 	isoReader io.ReaderAt
@@ -308,6 +320,10 @@ type ISO9660 struct {
 	filesystemEntries []*filesystem.FileSystemEntry
 	// ElTorito Boot Record
 	elTorito *boot.ElTorito
+	// ISO Layout Information
+	layout *info.ISOLayout
+	// Logger
+	logger *logging.Logger
 }
 
 // GetVolumeID returns the volume identifier of the ISO9660 filesystem.
@@ -602,6 +618,21 @@ func (iso *ISO9660) Extract(path string) error {
 	return nil
 }
 
+// SetLogger sets the logger for the ISO9660 filesystem.
+func (iso *ISO9660) SetLogger(logger *logging.Logger) {
+	iso.logger = logger
+}
+
+// GetLogger returns the logger for the ISO9660 filesystem.
+func (iso *ISO9660) GetLogger() *logging.Logger {
+	return iso.logger
+}
+
+// GetLayout returns the layout information for the ISO9660 filesystem.
+func (iso *ISO9660) GetLayout() *info.ISOLayout {
+	return iso.layout
+}
+
 func (iso *ISO9660) Save(writer io.WriterAt) error {
 
 	sectorSize := int64(consts.ISO9660_SECTOR_SIZE)
@@ -757,8 +788,6 @@ func (iso *ISO9660) writePathTables(writer io.WriterAt) error {
 		return err
 	}
 
-	// TODO: RM
-	fmt.Printf("Writing PVD %d byte LPathTable to offset %d\n", len(buf), int64(iso.pvd.LocationOfTypeLPathTable)*consts.ISO9660_SECTOR_SIZE)
 	if _, err = writer.WriteAt(buf, int64(iso.pvd.LocationOfTypeLPathTable)*consts.ISO9660_SECTOR_SIZE); err != nil {
 		return err
 	}
@@ -768,8 +797,6 @@ func (iso *ISO9660) writePathTables(writer io.WriterAt) error {
 		return err
 	}
 
-	// TODO: RM
-	fmt.Printf("Writing PVD %d byte MPathTable to offset %d\n", len(buf), int64(iso.pvd.LocationOfTypeMPathTable)*consts.ISO9660_SECTOR_SIZE)
 	if _, err = writer.WriteAt(buf, int64(iso.pvd.LocationOfTypeMPathTable)*consts.ISO9660_SECTOR_SIZE); err != nil {
 		return err
 	}
@@ -780,8 +807,6 @@ func (iso *ISO9660) writePathTables(writer io.WriterAt) error {
 			return err
 		}
 
-		// TODO: RM
-		fmt.Printf("Writing SVD %d byte LPathTable to offset %d\n", len(buf), int64(iso.svds[0].LocationOfTypeLPathTable)*consts.ISO9660_SECTOR_SIZE)
 		if _, err = writer.WriteAt(buf, int64(iso.svds[0].LocationOfTypeLPathTable)*consts.ISO9660_SECTOR_SIZE); err != nil {
 			return err
 		}
@@ -793,8 +818,6 @@ func (iso *ISO9660) writePathTables(writer io.WriterAt) error {
 			return err
 		}
 
-		// TODO: RM
-		fmt.Printf("Writing SVD %d byte MPathTable to offset %d\n", len(buf), int64(iso.svds[0].LocationOfTypeMPathTable)*consts.ISO9660_SECTOR_SIZE)
 		if _, err = writer.WriteAt(buf, int64(iso.svds[0].LocationOfTypeMPathTable)*consts.ISO9660_SECTOR_SIZE); err != nil {
 			return err
 		}
@@ -805,10 +828,10 @@ func (iso *ISO9660) writePathTables(writer io.WriterAt) error {
 
 func (iso *ISO9660) writeDirectoryRecords(writer io.WriterAt) error {
 
-	var rootDirOffset uint32
-
-	// TODO: Write PVD Directory records starting with the root
-	rootDirOffset = iso.pvd.RootDirectoryRecord.LocationOfExtent
+	//var rootDirOffset uint32
+	//
+	//// TODO: Write PVD Directory records starting with the root
+	//rootDirOffset = iso.pvd.RootDirectoryRecord.LocationOfExtent
 
 	// TODO: Write SVD Directory records starting with the root
 

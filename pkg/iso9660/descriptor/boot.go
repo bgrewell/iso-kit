@@ -5,6 +5,7 @@ import (
 	"github.com/bgrewell/iso-kit/pkg/consts"
 	"github.com/bgrewell/iso-kit/pkg/helpers"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/directory"
+	"github.com/bgrewell/iso-kit/pkg/logging"
 	"strings"
 	"time"
 )
@@ -108,6 +109,8 @@ type BootRecordBody struct {
 	BootIdentifier string `json:"boot_identifier"`
 	// Boot System Use is a byte field that is used by the boot system specified by the identifier.
 	BootSystemUse [BOOT_SYSTEM_USE_SIZE]byte `json:"boot_system_use"`
+	// Logger
+	Logger *logging.Logger
 }
 
 // Marshal converts the BootRecordDescriptor into its 2048-byte on-disk representation.

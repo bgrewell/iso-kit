@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/encoding"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/extensions"
+	"github.com/bgrewell/iso-kit/pkg/logging"
 	"os"
 	"time"
 )
@@ -82,6 +83,8 @@ type DirectoryRecord struct {
 	RockRidge *extensions.RockRidgeExtensions `json:"rock_ridge"`
 	// Joliet is a field to store if this record is from a volume with Joliet extensions
 	Joliet bool `json:"joliet"`
+	// Logger
+	Logger *logging.Logger
 }
 
 // IsDirectory checks if the entry is a Directory
@@ -99,6 +102,15 @@ func (dr *DirectoryRecord) IsSpecial() bool {
 
 // GetBestName retrieves the best file name
 func (dr *DirectoryRecord) GetBestName(RockRidgeEnabled bool) string {
+
+	// Handle special cases 'root' or 'parent'
+	if dr.IsSpecial() {
+		if dr.FileIdentifier == "\x00" {
+			return "."
+		}
+		return ".."
+	}
+
 	if RockRidgeEnabled && dr.RockRidge != nil && dr.RockRidge.AlternateName != nil {
 		return *dr.RockRidge.AlternateName
 	}
@@ -322,7 +334,12 @@ func (dr *DirectoryRecord) Unmarshal(data []byte) error {
 	}
 
 	if dr.Joliet {
-		dr.FileIdentifier = encoding.DecodeUCS2BigEndian(data[offset : offset+fiLen])
+		if fiLen == 1 {
+			// Under Joliet spec, special directory identifiers remain as 8-bit values
+			dr.FileIdentifier = string(data[offset : offset+fiLen])
+		} else {
+			dr.FileIdentifier = encoding.DecodeUCS2BigEndian(data[offset : offset+fiLen])
+		}
 	} else {
 		dr.FileIdentifier = string(data[offset : offset+fiLen])
 	}

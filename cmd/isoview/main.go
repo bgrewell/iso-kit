@@ -126,6 +126,16 @@ func DisplayISOInfo(i iso.ISO, verbose bool) {
 	}
 
 	fmt.Println("=========================")
+
+	// Print the layout info by converting to pretty json and printing that
+	layout := i.GetLayout()
+	if layout != nil {
+		fmt.Println("=== ISO Layout ===")
+		layout.Print(true, true, true)
+		fmt.Println("=========================")
+	} else {
+		fmt.Println("Failed to retrieve ISO layout")
+	}
 }
 
 func main() {

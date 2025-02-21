@@ -1,6 +1,7 @@
 package descriptor
 
 import (
+	"fmt"
 	"github.com/bgrewell/iso-kit/pkg/consts"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/directory"
 	"time"
@@ -25,6 +26,24 @@ const (
 	// TYPE_TERMINATOR_DESCRIPTOR indicates the Volume Descriptor Set Terminator (type 255).
 	TYPE_TERMINATOR_DESCRIPTOR VolumeDescriptorType = 0xFF
 )
+
+// String converts a VolumeDescriptorType to its string representation.
+func (vdt VolumeDescriptorType) String() string {
+	switch vdt {
+	case TYPE_BOOT_RECORD:
+		return "Boot Record"
+	case TYPE_PRIMARY_DESCRIPTOR:
+		return "Primary Volume Descriptor"
+	case TYPE_SUPPLEMENTARY_DESCRIPTOR:
+		return "Supplementary Volume Descriptor"
+	case TYPE_PARTITION_DESCRIPTOR:
+		return "Partition Volume Descriptor"
+	case TYPE_TERMINATOR_DESCRIPTOR:
+		return "Volume Descriptor Set Terminator"
+	default:
+		return fmt.Sprintf("Unknown Volume Descriptor (0x%X)", byte(vdt))
+	}
+}
 
 type VolumeDescriptor interface {
 	Type() VolumeDescriptorType

@@ -2,6 +2,8 @@ package udf
 
 import (
 	"github.com/bgrewell/iso-kit/pkg/filesystem"
+	"github.com/bgrewell/iso-kit/pkg/iso9660/info"
+	"github.com/bgrewell/iso-kit/pkg/logging"
 	"github.com/bgrewell/iso-kit/pkg/option"
 	"io"
 	"time"
@@ -145,6 +147,18 @@ func (U UDF) CreateDirectories(path string) error {
 }
 
 func (U UDF) Extract(path string) error {
+	panic("implement me")
+}
+
+func (U UDF) SetLogger(*logging.Logger) {
+	panic("implement me")
+}
+
+func (U UDF) GetLogger() *logging.Logger {
+	panic("implement me")
+}
+
+func (U *UDF) GetLayout() *info.ISOLayout {
 	panic("implement me")
 }
 

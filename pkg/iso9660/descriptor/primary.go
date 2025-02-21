@@ -7,6 +7,7 @@ import (
 	"github.com/bgrewell/iso-kit/pkg/helpers"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/directory"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/encoding"
+	"github.com/bgrewell/iso-kit/pkg/logging"
 	"strings"
 	"time"
 )
@@ -268,6 +269,8 @@ type PrimaryVolumeDescriptorBody struct {
 	ApplicationUse [consts.ISO9660_APPLICATION_USE_SIZE]byte `json:"application_use"`
 	// Reserved Field 2 is unused and all bytes should be set to 0x00.
 	ReservedField2 [PRIMARY_RESERVED_FIELD2_SIZE]byte `json:"reserved_field_2"`
+	// Logger
+	Logger *logging.Logger
 }
 
 // Marshal converts the PrimaryVolumeDescriptorBody into its 2041‑byte on‑disk representation,

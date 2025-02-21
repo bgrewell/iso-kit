@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/bgrewell/iso-kit/pkg/consts"
 	"github.com/bgrewell/iso-kit/pkg/filesystem"
+	"github.com/bgrewell/iso-kit/pkg/logging"
 	"io"
 	"os"
 	"path/filepath"
@@ -97,6 +98,7 @@ type ElTorito struct {
 	HideBootCatalog bool             // Whether to hide the boot catalog in the filesystem
 	Entries         []*ElToritoEntry // List of El-Torito boot entries
 	Platform        Platform         // Target platform for booting
+	Logger          *logging.Logger  // Logger for debug output
 }
 
 // UnmarshalBinary decodes an El-Torito Boot Catalog from binary form

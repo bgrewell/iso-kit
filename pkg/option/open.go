@@ -1,6 +1,8 @@
 package option
 
-import "github.com/go-logr/logr"
+import (
+	"github.com/bgrewell/iso-kit/pkg/logging"
+)
 
 type ExtractionProgressCallback func(
 	currentFilename string,
@@ -20,7 +22,7 @@ type OpenOptions struct {
 	ElToritoEnabled            bool
 	BootFileExtractLocation    string
 	ExtractionProgressCallback ExtractionProgressCallback
-	Logger                     logr.Logger
+	Logger                     *logging.Logger
 }
 
 type OpenOption func(*OpenOptions)
@@ -44,7 +46,7 @@ func WithBootFileExtractLocation(location string) OpenOption {
 	}
 }
 
-func WithLogger(logger logr.Logger) OpenOption {
+func WithLogger(logger *logging.Logger) OpenOption {
 	return func(o *OpenOptions) {
 		o.Logger = logger
 	}

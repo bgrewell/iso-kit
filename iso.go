@@ -5,6 +5,8 @@ import (
 	"github.com/bgrewell/iso-kit/pkg/consts"
 	"github.com/bgrewell/iso-kit/pkg/filesystem"
 	"github.com/bgrewell/iso-kit/pkg/iso9660"
+	"github.com/bgrewell/iso-kit/pkg/iso9660/info"
+	"github.com/bgrewell/iso-kit/pkg/logging"
 	"github.com/bgrewell/iso-kit/pkg/option"
 	"github.com/bgrewell/iso-kit/pkg/udf"
 	"io"
@@ -43,6 +45,11 @@ type ISO interface {
 	HasJoliet() bool
 	HasRockRidge() bool
 	HasElTorito() bool
+
+	SetLogger(*logging.Logger)
+	GetLogger() *logging.Logger
+
+	GetLayout() *info.ISOLayout
 
 	Save(writer io.WriterAt) error
 	Close() error

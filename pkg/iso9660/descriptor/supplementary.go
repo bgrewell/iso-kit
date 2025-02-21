@@ -6,6 +6,7 @@ import (
 	"github.com/bgrewell/iso-kit/pkg/consts"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/directory"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/encoding"
+	"github.com/bgrewell/iso-kit/pkg/logging"
 	"strings"
 	"time"
 )
@@ -265,6 +266,8 @@ type SupplementaryVolumeDescriptorBody struct {
 	ApplicationUse [consts.ISO9660_APPLICATION_USE_SIZE]byte `json:"application_use"`
 	// Reserved Field 2. Values should all be 0x00
 	ReservedField2 [653]byte `json:"reserved_field_2"`
+	// Logger
+	Logger *logging.Logger
 }
 
 // Marshal converts the SupplementaryVolumeDescriptorBody into its fixed‑size on‑disk representation.

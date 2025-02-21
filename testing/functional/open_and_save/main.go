@@ -4,6 +4,8 @@ import (
 	"crypto/md5"
 	"fmt"
 	"github.com/bgrewell/iso-kit"
+	"github.com/bgrewell/iso-kit/pkg/logging"
+	"github.com/bgrewell/iso-kit/pkg/option"
 	"github.com/bgrewell/usage"
 	"io"
 	"os"
@@ -51,7 +53,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	i, err := iso.Open(*input)
+	logger := logging.NewLogger(logging.NewSimpleLogger(os.Stderr, logging.LEVEL_TRACE, true))
+	i, err := iso.Open(*input,
+		option.WithLogger(logger))
 	if err != nil {
 		fmt.Printf("Failed to open ISO file: %s\n", err)
 		os.Exit(1)
