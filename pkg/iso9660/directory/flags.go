@@ -1,7 +1,5 @@
 package directory
 
-import "fmt"
-
 // FileFlags holds the flag values from a Directory Record's File Flags field.
 // The bits are numbered from 0 (LSB) to 7 (MSB) as follows:
 //
@@ -57,9 +55,7 @@ func (ff FileFlags) Marshal() byte {
 // UnmarshalFileFlags converts a byte into a FileFlags struct.
 // It returns an error if any reserved bits (bits 5 and 6) are nonzero.
 func UnmarshalFileFlags(b byte) (FileFlags, error) {
-	if b&0x60 != 0 { // Check reserved bits: 0x20 (bit 5) and 0x40 (bit 6)
-		return FileFlags{}, fmt.Errorf("invalid file flags: reserved bits must be zero, got 0x%02X", b)
-	}
+	// Reserved bits 5 and 6 are set by some older ISO authoring tools; tolerate them.
 	return FileFlags{
 		Hidden:         (b & 0x01) != 0,
 		Directory:      (b & 0x02) != 0,

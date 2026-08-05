@@ -500,7 +500,8 @@ func (p *Parser) ReadDirectoryRecords(lba uint32, dataLength uint32, joliet bool
 				break // End of directory data
 			}
 			p.logger.Trace("Moving to next sector", "sector", nextSector)
-			index = nextSector // Align to next sector
+			index = nextSector
+			sectorBoundary = nextSector + sectorSize
 			continue
 		}
 

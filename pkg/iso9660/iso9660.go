@@ -1,6 +1,7 @@
 package iso9660
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"github.com/bgrewell/iso-kit/pkg/consts"
@@ -51,7 +52,8 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 		return nil, err
 	}
 	sa := systemarea.SystemArea{
-		Contents: saBuf,
+		Contents:   saBuf,
+		ObjectSize: consts.ISO9660_SECTOR_SIZE * consts.ISO9660_SYSTEM_AREA_SECTORS,
 	}
 
 	// Create a parser
@@ -288,117 +290,205 @@ type ISO9660 struct {
 	isPacked bool
 }
 
+func (iso *ISO9660) preferJoliet() bool {
+	return iso.openOptions != nil && iso.openOptions.PreferJoliet
+}
+
 // GetVolumeID returns the volume identifier of the ISO9660 filesystem.
 func (iso *ISO9660) GetVolumeID() string {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return ""
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].VolumeIdentifier()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return ""
 	}
 	return iso.volumeDescriptorSet.Primary.VolumeIdentifier()
 }
 
 // GetSystemID returns the system identifier of the ISO9660 filesystem.
 func (iso *ISO9660) GetSystemID() string {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return ""
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].SystemIdentifier()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return ""
 	}
 	return iso.volumeDescriptorSet.Primary.SystemIdentifier()
 }
 
 // GetVolumeSize returns the size of the ISO9660 filesystem.
 func (iso *ISO9660) GetVolumeSize() uint32 {
+	if iso.volumeDescriptorSet == nil || iso.volumeDescriptorSet.Primary == nil {
+		return 0
+	}
 	return iso.volumeDescriptorSet.Primary.VolumeSpaceSize
 }
 
 // GetVolumeSetID returns the volume set identifier of the ISO9660 filesystem.
 func (iso *ISO9660) GetVolumeSetID() string {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return ""
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].VolumeSetIdentifier()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return ""
 	}
 	return iso.volumeDescriptorSet.Primary.VolumeSetIdentifier()
 }
 
 // GetPublisherID returns the publisher identifier of the ISO9660 filesystem.
 func (iso *ISO9660) GetPublisherID() string {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return ""
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].PublisherIdentifier()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return ""
 	}
 	return iso.volumeDescriptorSet.Primary.PublisherIdentifier()
 }
 
 // GetDataPreparerID returns the data preparer identifier of the ISO9660 filesystem.
 func (iso *ISO9660) GetDataPreparerID() string {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return ""
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].DataPreparerIdentifier()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return ""
 	}
 	return iso.volumeDescriptorSet.Primary.DataPreparerIdentifier()
 }
 
 // GetApplicationID returns the application identifier of the ISO9660 filesystem.
 func (iso *ISO9660) GetApplicationID() string {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return ""
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].ApplicationIdentifier()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return ""
 	}
 	return iso.volumeDescriptorSet.Primary.ApplicationIdentifier()
 }
 
 // GetCopyrightID returns the copyright identifier of the ISO9660 filesystem.
 func (iso *ISO9660) GetCopyrightID() string {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return ""
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].CopyrightFileIdentifier()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return ""
 	}
 	return iso.volumeDescriptorSet.Primary.CopyrightFileIdentifier()
 }
 
 // GetAbstractID returns the abstract identifier of the ISO9660 filesystem.
 func (iso *ISO9660) GetAbstractID() string {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return ""
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].AbstractFileIdentifier()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return ""
 	}
 	return iso.volumeDescriptorSet.Primary.AbstractFileIdentifier()
 }
 
 // GetBibliographicID returns the bibliographic identifier of the ISO9660 filesystem.
 func (iso *ISO9660) GetBibliographicID() string {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return ""
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].BibliographicFileIdentifier()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return ""
 	}
 	return iso.volumeDescriptorSet.Primary.BibliographicFileIdentifier()
 }
 
 // GetCreationDateTime returns the creation date and time of the ISO9660 filesystem.
 func (iso *ISO9660) GetCreationDateTime() time.Time {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return time.Time{}
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].VolumeCreationDateTime()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return time.Time{}
 	}
 	return iso.volumeDescriptorSet.Primary.VolumeCreationDateTime()
 }
 
 // GetModificationDateTime returns the modification date and time of the ISO9660 filesystem.
 func (iso *ISO9660) GetModificationDateTime() time.Time {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return time.Time{}
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].VolumeModificationDateTime()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return time.Time{}
 	}
 	return iso.volumeDescriptorSet.Primary.VolumeModificationDateTime()
 }
 
 // GetExpirationDateTime returns the expiration date and time of the ISO9660 filesystem.
 func (iso *ISO9660) GetExpirationDateTime() time.Time {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return time.Time{}
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].VolumeExpirationDateTime()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return time.Time{}
 	}
 	return iso.volumeDescriptorSet.Primary.VolumeExpirationDateTime()
 }
 
 // GetEffectiveDateTime returns the effective date and time of the ISO9660 filesystem.
 func (iso *ISO9660) GetEffectiveDateTime() time.Time {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return time.Time{}
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].VolumeEffectiveDateTime()
+	}
+	if iso.volumeDescriptorSet.Primary == nil {
+		return time.Time{}
 	}
 	return iso.volumeDescriptorSet.Primary.VolumeEffectiveDateTime()
 }
 
 // HasJoliet returns true if the ISO9660 filesystem has Joliet extensions.
 func (iso *ISO9660) HasJoliet() bool {
+	if iso.volumeDescriptorSet == nil {
+		return false
+	}
 	for _, svd := range iso.volumeDescriptorSet.Supplementary {
 		if svd.HasJoliet() {
 			return true
@@ -409,6 +499,9 @@ func (iso *ISO9660) HasJoliet() bool {
 
 // HasRockRidge returns true if the ISO9660 filesystem has Rock Ridge extensions.
 func (iso *ISO9660) HasRockRidge() bool {
+	if iso.volumeDescriptorSet == nil || iso.volumeDescriptorSet.Primary == nil {
+		return false
+	}
 	return iso.volumeDescriptorSet.Primary.HasRockRidge()
 }
 
@@ -419,14 +512,23 @@ func (iso *ISO9660) HasElTorito() bool {
 
 // RootDirectoryLocation returns the location of the root directory in the ISO9660 filesystem.
 func (iso *ISO9660) RootDirectoryLocation() uint32 {
-	if iso.openOptions.PreferJoliet && iso.volumeDescriptorSet.Supplementary != nil {
+	if iso.volumeDescriptorSet == nil {
+		return 0
+	}
+	if iso.preferJoliet() && iso.volumeDescriptorSet.Supplementary != nil {
 		return iso.volumeDescriptorSet.Supplementary[0].RootDirectoryRecord.LocationOfExtent
+	}
+	if iso.volumeDescriptorSet.Primary == nil || iso.volumeDescriptorSet.Primary.RootDirectoryRecord == nil {
+		return 0
 	}
 	return iso.volumeDescriptorSet.Primary.RootDirectoryRecord.LocationOfExtent
 }
 
 // ListBootEntries returns a list of all boot entries in the ISO9660 filesystem.
 func (iso *ISO9660) ListBootEntries() ([]*filesystem.FileSystemEntry, error) {
+	if iso.elTorito == nil {
+		return nil, nil
+	}
 	return iso.elTorito.BuildBootImageEntries()
 }
 
@@ -525,63 +627,63 @@ func (iso *ISO9660) Extract(path string) error {
 
 		// if the option to strip version info is enabled, enhanced and rr are not enabled then strip the version info
 		if iso.openOptions.StripVersionInfo && !iso.openOptions.RockRidgeEnabled && !iso.openOptions.PreferJoliet {
-			outputPath = strings.TrimRight(outputPath, ";1")
+			outputPath = strings.TrimSuffix(outputPath, ";1")
 		}
 
-		// Open output file for writing
-		outFile, err := os.Create(outputPath)
-		if err != nil {
-			return fmt.Errorf("failed to create file %s: %w", outputPath, err)
+		if err := iso.extractFile(entry, outputPath, i+1, totalFiles); err != nil {
+			return err
 		}
-		defer outFile.Close()
+	}
 
-		// Stream the file from the ISO
-		startOffset := int64(entry.Location) * int64(consts.ISO9660_SECTOR_SIZE)
-		size := int64(entry.Size)
-		bufferSize := 4096 // 4KB buffer
-		buffer := make([]byte, bufferSize)
+	return nil
+}
 
-		var bytesTransferred int64
-		for bytesTransferred < size {
-			// Read chunk from ISO
-			bytesToRead := bufferSize
-			if remaining := size - bytesTransferred; remaining < int64(bufferSize) {
-				bytesToRead = int(remaining)
-			}
+func (iso *ISO9660) extractFile(entry *filesystem.FileSystemEntry, outputPath string, fileNum, totalFiles int) error {
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create file %s: %w", outputPath, err)
+	}
+	defer outFile.Close()
 
-			n, err := entry.ReadAt(buffer[:bytesToRead], startOffset+bytesTransferred)
-			if err != nil && err != io.EOF {
-				return fmt.Errorf("failed to read file %s from ISO: %w", entry.FullPath, err)
-			}
+	startOffset := int64(entry.Location) * int64(consts.ISO9660_SECTOR_SIZE)
+	size := int64(entry.Size)
+	bufferSize := 4096
+	buffer := make([]byte, bufferSize)
 
-			if n == 0 {
-				break // Reached EOF
-			}
-
-			// Write chunk to file
-			if _, err := outFile.Write(buffer[:n]); err != nil {
-				return fmt.Errorf("failed to write to file %s: %w", outputPath, err)
-			}
-
-			// Update bytes transferred
-			bytesTransferred += int64(n)
-
-			// Invoke progress callback
-			if iso.openOptions.ExtractionProgressCallback != nil {
-				iso.openOptions.ExtractionProgressCallback(outputPath, bytesTransferred, size, i+1, totalFiles)
-			}
+	var bytesTransferred int64
+	for bytesTransferred < size {
+		bytesToRead := bufferSize
+		if remaining := size - bytesTransferred; remaining < int64(bufferSize) {
+			bytesToRead = int(remaining)
 		}
 
-		// Set correct file permissions
-		if err := os.Chmod(outputPath, entry.Mode); err != nil {
-			return fmt.Errorf("failed to set permissions on %s: %w", outputPath, err)
+		n, err := entry.ReadAt(buffer[:bytesToRead], startOffset+bytesTransferred)
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("failed to read file %s from ISO: %w", entry.FullPath, err)
 		}
 
-		// Set timestamps
-		if !entry.ModTime.IsZero() {
-			if err := os.Chtimes(outputPath, entry.ModTime, entry.ModTime); err != nil {
-				return fmt.Errorf("failed to set timestamps on %s: %w", outputPath, err)
-			}
+		if n == 0 {
+			break
+		}
+
+		if _, err := outFile.Write(buffer[:n]); err != nil {
+			return fmt.Errorf("failed to write to file %s: %w", outputPath, err)
+		}
+
+		bytesTransferred += int64(n)
+
+		if iso.openOptions != nil && iso.openOptions.ExtractionProgressCallback != nil {
+			iso.openOptions.ExtractionProgressCallback(outputPath, bytesTransferred, size, fileNum, totalFiles)
+		}
+	}
+
+	if err := os.Chmod(outputPath, entry.Mode); err != nil {
+		return fmt.Errorf("failed to set permissions on %s: %w", outputPath, err)
+	}
+
+	if !entry.ModTime.IsZero() {
+		if err := os.Chtimes(outputPath, entry.ModTime, entry.ModTime); err != nil {
+			return fmt.Errorf("failed to set timestamps on %s: %w", outputPath, err)
 		}
 	}
 
@@ -658,7 +760,7 @@ func (iso *ISO9660) Save(writer io.WriterAt) error {
 
 	// Sort objects by offset before writing
 	slices.SortFunc(objects, func(a, b info.ImageObject) int {
-		return int(a.Offset() - b.Offset())
+		return cmp.Compare(a.Offset(), b.Offset())
 	})
 
 	// Write each object at its assigned offset
@@ -677,139 +779,6 @@ func (iso *ISO9660) Save(writer io.WriterAt) error {
 	}
 
 	return nil
-
-	//sectorSize := int64(consts.ISO9660_SECTOR_SIZE)
-	//saOffset := int64(0)
-	//
-	//// Calculate offsets for descriptors
-	//pvdSize := sectorSize
-	//bootSize := int64(0)
-	//if iso.bootRecord != nil {
-	//	bootSize = sectorSize
-	//}
-	//svdSize := int64(len(iso.svds)) * sectorSize
-	//ptvdSize := int64(len(iso.partitionvds)) * sectorSize
-	//
-	//pvdOffset := saOffset + consts.ISO9660_SYSTEM_AREA_SECTORS*sectorSize
-	//bootOffset := pvdOffset + pvdSize
-	//svdOffset := bootOffset + bootSize
-	//ptvdOffset := svdOffset + svdSize
-	//termOffset := ptvdOffset + ptvdSize
-	//
-	//type descriptorSetEntry struct {
-	//	descriptor descriptor.VolumeDescriptor
-	//	offset     int64
-	//}
-	//descriptorSet := []*descriptorSetEntry{
-	//	{descriptor: iso.pvd, offset: pvdOffset},
-	//}
-	//if iso.bootRecord != nil {
-	//	descriptorSet = append(descriptorSet,
-	//		&descriptorSetEntry{descriptor: iso.bootRecord, offset: bootOffset},
-	//	)
-	//}
-	//for i, svd := range iso.svds {
-	//	descriptorSet = append(descriptorSet,
-	//		&descriptorSetEntry{descriptor: svd, offset: svdOffset + int64(i)*sectorSize},
-	//	)
-	//}
-	//for i, ptvd := range iso.partitionvds {
-	//	descriptorSet = append(descriptorSet,
-	//		&descriptorSetEntry{descriptor: ptvd, offset: ptvdOffset + int64(i)*sectorSize},
-	//	)
-	//}
-	//descriptorSet = append(descriptorSet,
-	//	&descriptorSetEntry{descriptor: descriptor.NewVolumeDescriptorSetTerminator(), offset: termOffset})
-	//
-	//// Write system area
-	//_, err := writer.WriteAt(iso.systemArea.Contents[:], 0)
-	//if err != nil {
-	//	return err
-	//}
-	//
-	//// Write descriptor set
-	//for _, entry := range descriptorSet {
-	//	if err = writeDescriptor(writer, entry.descriptor, entry.offset); err != nil {
-	//		return err
-	//	}
-	//}
-	//
-	//// Write path tables according to their location in the volume descriptors
-	//err = iso.writePathTables(writer)
-	//if err != nil {
-	//	return err
-	//}
-
-	// Write directory records
-
-	//pathTableOffset := svdOffset + (len(iso.svds) * sectorSize)
-	//// Directory Record offsets should be
-	//
-	//
-
-	//// TODO: Clean up all of the offset calculations, instead this should be calculated somewhere
-	////       else and the locations should just be used to write the data or this should be wrapped
-	////       nicely in a function.
-	//// Write volume descriptor set
-	//pvdOffset := int64(16 * sectorSize)
-	//err = writeDescriptor(writer, iso.pvd, pvdOffset)
-	//if err != nil {
-	//	return err
-	//}
-	//
-	//svdOffset := pvdOffset + int64(1*sectorSize)
-	//for i, svd := range iso.svds {
-	//	err = writeDescriptor(writer, svd, svdOffset)
-	//	if err != nil {
-	//		return err
-	//	}
-	//	svdOffset = svdOffset+int64((i+1)*sectorSize)
-	//}
-	//
-	//ptvdOffset := svdOffset
-	//for i, pvd := range iso.partitionvds {
-	//	if err = writeDescriptor(writer, pvd, ptvdOffset); err != nil {
-	//		return err
-	//	}
-	//	ptvdOffset = ptvdOffset+int64((i+1)*sectorSize)
-	//}
-	//
-	//bootOffset := ptvdOffset
-	//if iso.bootRecord != nil {
-	//	if err = writeDescriptor(writer, iso.bootRecord, bootOffset); err != nil {
-	//		return err
-	//	}
-	//	bootOffset = bootOffset + int64(1*sectorSize)
-	//}
-	//
-	//tr := descriptor.NewVolumeDescriptorSetTerminator()
-	//if err := writeDescriptor(writer, tr, bootOffset); err != nil {
-	//	return err
-	//}
-
-	//// 3: Write path tables (Little & Big Endian versions)
-	//if err = iso.writePathTables(writer); err != nil {
-	//	return err
-	//}
-	//
-	//// 4: Write directory records (Root & Subdirectories)
-	//totalRecords := append(iso.pvdDirectoryRecords, iso.svdDirectoryRecords...)
-	//for i, dr := range totalRecords {
-	//	drOffset :=
-	//}
-	//
-	//
-	//// 5: Write file contents (Ensuring correct logical block placement)
-	//if err := iso.writeFileData(writer); err != nil {
-	//	return err
-	//}
-	//
-	//// 6: Align to sector size (Padding to 2048-byte boundaries)
-	//if err := padToSector(writer); err != nil {
-	//	return err
-	//}
-
-	return nil
 }
 
 // Close closes the ISO9660 filesystem.
@@ -818,143 +787,6 @@ func (iso *ISO9660) Close() error {
 		return f.Close()
 	}
 	return nil
-}
-
-// writePathTables writes the path tables to the ISO9660 filesystem.
-func (iso *ISO9660) writePathTables(writer io.WriterAt) error {
-	//if iso.pvd == nil {
-	//	return errors.New("PVD is missing")
-	//}
-	//
-	//buf, err := iso.pvdLPathTable.Marshal(true)
-	//if err != nil {
-	//	return err
-	//}
-	//
-	//if _, err = writer.WriteAt(buf, int64(iso.pvd.LocationOfTypeLPathTable)*consts.ISO9660_SECTOR_SIZE); err != nil {
-	//	return err
-	//}
-	//
-	//buf, err = iso.pvdMPathTable.Marshal(false)
-	//if err != nil {
-	//	return err
-	//}
-	//
-	//if _, err = writer.WriteAt(buf, int64(iso.pvd.LocationOfTypeMPathTable)*consts.ISO9660_SECTOR_SIZE); err != nil {
-	//	return err
-	//}
-	//
-	//if iso.svdLPathTable != nil {
-	//	buf, err = iso.svdLPathTable.Marshal(true)
-	//	if err != nil {
-	//		return err
-	//	}
-	//
-	//	if _, err = writer.WriteAt(buf, int64(iso.svds[0].LocationOfTypeLPathTable)*consts.ISO9660_SECTOR_SIZE); err != nil {
-	//		return err
-	//	}
-	//}
-	//
-	//if iso.svdMPathTable != nil {
-	//	buf, err = iso.svdMPathTable.Marshal(false)
-	//	if err != nil {
-	//		return err
-	//	}
-	//
-	//	if _, err = writer.WriteAt(buf, int64(iso.svds[0].LocationOfTypeMPathTable)*consts.ISO9660_SECTOR_SIZE); err != nil {
-	//		return err
-	//	}
-	//}
-
-	return nil
-}
-
-func (iso *ISO9660) writeDirectoryRecords(writer io.WriterAt) error {
-
-	//var rootDirOffset uint32
-	//
-	//// TODO: Write PVD Directory records starting with the root
-	//rootDirOffset = iso.pvd.RootDirectoryRecord.LocationOfExtent
-
-	// TODO: Write SVD Directory records starting with the root
-
-	//sectorSize := consts.ISO9660_SECTOR_SIZE
-	//
-	//// Root Directory
-	//rootDirData, err := iso.
-	//if err != nil {
-	//	return err
-	//}
-	//if _, err := writer.Write(rootDirData[:]); err != nil {
-	//	return err
-	//}
-	//
-	//// Write Subdirectories
-	//for _, dir := range iso.directories {
-	//	dirData, err := dir.Marshal()
-	//	if err != nil {
-	//		return err
-	//	}
-	//
-	//	// Ensure correct sector alignment
-	//	padding := sectorSize - (len(dirData) % sectorSize)
-	//	if padding < sectorSize {
-	//		dirData = append(dirData, make([]byte, padding)...)
-	//	}
-	//
-	//	if _, err := writer.Write(dirData[:]); err != nil {
-	//		return err
-	//	}
-	//}
-	//
-	//return nil
-	return errors.New("not implemented")
-}
-
-func (iso *ISO9660) writeFileData(writer io.Writer) error {
-	//sectorSize := consts.ISO9660_SECTOR_SIZE
-	//
-	//for _, file := range iso. {
-	//	fileData, err := file.ReadData()
-	//	if err != nil {
-	//		return err
-	//	}
-	//
-	//	if _, err := writer.Write(fileData); err != nil {
-	//		return err
-	//	}
-	//
-	//	// Align to sector size
-	//	padding := sectorSize - (len(fileData) % sectorSize)
-	//	if padding < sectorSize {
-	//		if _, err := writer.Write(make([]byte, padding)); err != nil {
-	//			return err
-	//		}
-	//	}
-	//}
-	//
-	//return nil
-	return errors.New("not implemented")
-}
-
-func padToSector(writer io.Writer) error {
-	//sectorSize := consts.ISO9660_SECTOR_SIZE
-	//
-	//// Get current file position
-	//offset, err := writer.Seek(0, io.SeekCurrent)
-	//if err != nil {
-	//	return err
-	//}
-	//
-	//// Compute padding
-	//padding := sectorSize - (offset % sectorSize)
-	//if padding < sectorSize {
-	//	_, err := writer.Write(make([]byte, padding))
-	//	return err
-	//}
-	//
-	//return nil
-	return errors.New("not implemented")
 }
 
 func writeDescriptor(writer io.WriterAt, descriptor descriptor.VolumeDescriptor, offset int64) error {
@@ -972,17 +804,4 @@ func writeDescriptor(writer io.WriterAt, descriptor descriptor.VolumeDescriptor,
 	}
 
 	return nil
-}
-
-func writePathTable(writer io.Writer, location uint32, littleEndian bool) error {
-	//if location == 0 {
-	//	return nil // Skip if no path table is set
-	//}
-	//
-	//pathTable := generatePathTable(littleEndian) // Implement the path table generator
-	//data := pathTable.Marshal()
-	//
-	//_, err := writer.Write(data)
-	//return err
-	return errors.New("not implemented")
 }

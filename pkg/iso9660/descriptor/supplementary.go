@@ -26,7 +26,7 @@ func (d *SupplementaryVolumeDescriptor) DescriptorType() VolumeDescriptorType {
 }
 
 func (d *SupplementaryVolumeDescriptor) LocationOfPathTableL() uint32 {
-	return d.SupplementaryVolumeDescriptorBody.LocationOfTypeMPathTable
+	return d.SupplementaryVolumeDescriptorBody.LocationOfTypeLPathTable
 }
 
 func (d *SupplementaryVolumeDescriptor) LocationOfPathTableM() uint32 {
@@ -90,8 +90,7 @@ func (d *SupplementaryVolumeDescriptor) VolumeEffectiveDateTime() time.Time {
 }
 
 func (d *SupplementaryVolumeDescriptor) HasJoliet() bool {
-	// TODO: Should actually detect the Escape Sequences field to determine if Joliet is present.
-	return true
+	return d.SupplementaryVolumeDescriptorBody.IsJoliet()
 }
 
 func (d *SupplementaryVolumeDescriptor) HasRockRidge() bool {

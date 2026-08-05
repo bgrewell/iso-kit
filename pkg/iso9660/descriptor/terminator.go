@@ -76,6 +76,7 @@ func (d *VolumeDescriptorSetTerminator) Unmarshal(data [consts.ISO9660_SECTOR_SI
 
 	// 2. Unmarshal the VolumeDescriptorSetTerminatorBody (remaining bytes).
 	copy(d.VolumeDescriptorSetTerminatorBody.Reserved[:], data[offset:offset+TERMINATOR_RESERVED_SIZE])
+	offset += TERMINATOR_RESERVED_SIZE
 
 	if offset != consts.ISO9660_SECTOR_SIZE {
 		return fmt.Errorf("unmarshal VolumeDescriptorSetTerminator: incorrect offset %d", offset)

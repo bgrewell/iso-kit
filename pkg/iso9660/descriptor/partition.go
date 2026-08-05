@@ -24,83 +24,67 @@ func (d *VolumePartitionDescriptor) DescriptorType() VolumeDescriptorType {
 }
 
 func (d *VolumePartitionDescriptor) VolumeIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *VolumePartitionDescriptor) SystemIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *VolumePartitionDescriptor) VolumeSetIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *VolumePartitionDescriptor) PublisherIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *VolumePartitionDescriptor) DataPreparerIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *VolumePartitionDescriptor) ApplicationIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *VolumePartitionDescriptor) CopyrightFileIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *VolumePartitionDescriptor) AbstractFileIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *VolumePartitionDescriptor) BibliographicFileIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *VolumePartitionDescriptor) VolumeCreationDateTime() time.Time {
-	//TODO implement me
-	panic("implement me")
+	return time.Time{}
 }
 
 func (d *VolumePartitionDescriptor) VolumeModificationDateTime() time.Time {
-	//TODO implement me
-	panic("implement me")
+	return time.Time{}
 }
 
 func (d *VolumePartitionDescriptor) VolumeExpirationDateTime() time.Time {
-	//TODO implement me
-	panic("implement me")
+	return time.Time{}
 }
 
 func (d *VolumePartitionDescriptor) VolumeEffectiveDateTime() time.Time {
-	//TODO implement me
-	panic("implement me")
+	return time.Time{}
 }
 
 func (d *VolumePartitionDescriptor) HasJoliet() bool {
-	//TODO implement me
-	panic("implement me")
+	return false
 }
 
 func (d *VolumePartitionDescriptor) HasRockRidge() bool {
-	//TODO implement me
-	panic("implement me")
+	return false
 }
 
 func (d *VolumePartitionDescriptor) RootDirectory() *directory.DirectoryRecord {
-	//TODO implement me
-	panic("implement me")
+	return nil
 }
 
 func (d *VolumePartitionDescriptor) GetObjects() []info.ImageObject {
