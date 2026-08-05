@@ -396,9 +396,7 @@ func (dr *DirectoryRecord) Unmarshal(data []byte) error {
 		if offset+1 > int(recordLength) {
 			return fmt.Errorf("insufficient data for padding byte")
 		}
-		if data[offset] != 0x00 {
-			return fmt.Errorf("expected padding byte 0x00, got 0x%02X", data[offset])
-		}
+		// Some ISO authoring tools write non-zero padding; tolerate it.
 		offset++
 	}
 

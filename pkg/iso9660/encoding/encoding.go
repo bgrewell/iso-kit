@@ -73,12 +73,8 @@ func UnmarshalUint16LSBMSB(data [4]byte) (uint16, error) {
 func MarshalDateTime(t time.Time) ([17]byte, error) {
 	var out [17]byte
 
-	// If zero time => ASCII '0' x16 + final offset=0 => "unspecified"
+	// Zero time => all binary zeros (unspecified). Real ISOs use 0x00, not ASCII '0'.
 	if t.IsZero() {
-		for i := 0; i < 16; i++ {
-			out[i] = '0'
-		}
-		out[16] = 0
 		return out, nil
 	}
 
@@ -108,7 +104,18 @@ func MarshalDateTime(t time.Time) ([17]byte, error) {
 // YYYY MM DD hh mm ss cc, and the 17th byte as the offset in 15-minute intervals.
 // Note: This format is used in Volume Descriptors
 func UnmarshalDateTime(b [17]byte) (time.Time, error) {
-	// Detect "unspecified" => 16 ASCII '0' + offset=0
+	// Detect "unspecified" => all binary zeros (common in real ISOs) or 16 ASCII '0' + offset=0
+	allZero := true
+	for i := 0; i < 17; i++ {
+		if b[i] != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		return time.Time{}, nil
+	}
+
 	isUnspecified := true
 	for i := 0; i < 16; i++ {
 		if b[i] != '0' {

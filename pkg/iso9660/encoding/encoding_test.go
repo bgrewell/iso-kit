@@ -18,15 +18,16 @@ func TestISO9660DateTime(t *testing.T) {
 		}
 		zeros[16] = 0
 
-		// Unmarshal => zero time
+		// Unmarshal ASCII '0' form => zero time
 		tm, err := UnmarshalDateTime(zeros)
 		require.NoError(t, err)
 		require.True(t, tm.IsZero())
 
-		// Marshal that zero time => same 16 '0' + offset=0
+		// Marshal that zero time => binary zeros (real-world ISO convention)
 		reBytes, err := MarshalDateTime(tm)
 		require.NoError(t, err)
-		require.Equal(t, zeros, reBytes)
+		var binaryZeros [17]byte
+		require.Equal(t, binaryZeros, reBytes)
 	})
 
 	t.Run("RoundTripUTCOffset0", func(t *testing.T) {
@@ -80,7 +81,7 @@ func TestMarshalDateTime(t *testing.T) {
 		{
 			name:      "zero time",
 			timeVal:   time.Time{}, // t.IsZero() == true
-			wantBytes: "0000000000000000",
+			wantBytes: "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
 			wantOff:   0,
 			wantErr:   false,
 		},
@@ -135,11 +136,9 @@ func TestMarshalDateTime(t *testing.T) {
 			require.Equal(t, tt.wantOff, offset, "Mismatch in offset byte")
 
 			if tt.timeVal.IsZero() {
-				// For zero time, ensure all are ASCII '0'
-				for i := 0; i < 16; i++ {
-					require.Equal(t, byte('0'), got[i], "Expected zero-time to have '0' in each digit")
+				for i := 0; i < 17; i++ {
+					require.Equal(t, byte(0), got[i], "Expected zero-time to have 0x00 in each byte")
 				}
-				require.Equal(t, int8(0), offset, "Offset for zero time should be 0")
 			} else {
 				// Further optional checks: parse the date/time portions from gotStr
 				yyyy, _ := strconv.Atoi(gotStr[0:4])

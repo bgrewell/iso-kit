@@ -26,83 +26,67 @@ func (d *BootRecordDescriptor) DescriptorType() VolumeDescriptorType {
 }
 
 func (d *BootRecordDescriptor) VolumeIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *BootRecordDescriptor) SystemIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *BootRecordDescriptor) VolumeSetIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *BootRecordDescriptor) PublisherIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *BootRecordDescriptor) DataPreparerIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *BootRecordDescriptor) ApplicationIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *BootRecordDescriptor) CopyrightFileIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *BootRecordDescriptor) AbstractFileIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *BootRecordDescriptor) BibliographicFileIdentifier() string {
-	//TODO implement me
-	panic("implement me")
+	return ""
 }
 
 func (d *BootRecordDescriptor) VolumeCreationDateTime() time.Time {
-	//TODO implement me
-	panic("implement me")
+	return time.Time{}
 }
 
 func (d *BootRecordDescriptor) VolumeModificationDateTime() time.Time {
-	//TODO implement me
-	panic("implement me")
+	return time.Time{}
 }
 
 func (d *BootRecordDescriptor) VolumeExpirationDateTime() time.Time {
-	//TODO implement me
-	panic("implement me")
+	return time.Time{}
 }
 
 func (d *BootRecordDescriptor) VolumeEffectiveDateTime() time.Time {
-	//TODO implement me
-	panic("implement me")
+	return time.Time{}
 }
 
 func (d *BootRecordDescriptor) HasJoliet() bool {
-	//TODO implement me
-	panic("implement me")
+	return false
 }
 
 func (d *BootRecordDescriptor) HasRockRidge() bool {
-	//TODO implement me
-	panic("implement me")
+	return false
 }
 
 func (d *BootRecordDescriptor) RootDirectory() *directory.DirectoryRecord {
-	//TODO implement me
-	panic("implement me")
+	return nil
 }
 
 func (d *BootRecordDescriptor) GetObjects() []info.ImageObject {
