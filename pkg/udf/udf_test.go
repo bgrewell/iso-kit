@@ -114,7 +114,7 @@ func buildTestImage(t *testing.T) []byte {
 	writeFE := func(block int, fileType byte, infoLength uint64, perms uint32, ads []shortAD) {
 		off := (partStart + block) * SectorSize
 		image[off+16+11] = fileType
-		image[off+16+18] = 0 // short_ad allocation
+		image[off+16+18] = 0                                 // short_ad allocation
 		binary.LittleEndian.PutUint32(image[off+36:], 1000)  // uid
 		binary.LittleEndian.PutUint32(image[off+40:], 1000)  // gid
 		binary.LittleEndian.PutUint32(image[off+44:], perms) // permissions
