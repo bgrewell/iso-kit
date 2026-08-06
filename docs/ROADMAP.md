@@ -186,10 +186,18 @@ Goal: proper extension support with spec-compliant serialization.
 
 Goal: UDF support, USB-bootable hybrid ISOs, production CLI, comprehensive testing.
 
-- [ ] Fix UDF detection (scan Volume Recognition Sequence at sectors 16+)
-- [ ] UDF Volume Recognition Sequence and AVDP parsing
-- [ ] UDF volume descriptor and partition parsing (ECMA-167)
-- [ ] UDF file system traversal (FSD → ICB → File Entry → FID)
+- [x] Fix UDF detection (scan Volume Recognition Sequence at sectors 16+)
+  - `udf.IsUDF` scans the VRS for NSR02/NSR03; iso.Open dispatches on it
+    (previously probed sector 256 for "BEA01", which lives at sector 16)
+- [x] UDF Volume Recognition Sequence and AVDP parsing
+- [x] UDF volume descriptor and partition parsing (ECMA-167)
+  - Descriptor tags with checksum verification, PVD, PD, LVD; main VDS
+    with reserve fallback; OSTA compressed unicode dstrings; timestamps
+- [x] UDF file system traversal (FSD → ICB → File Entry → FID)
+  - FE and EFE ICBs; short_ad, long_ad, and inline allocation; multi-
+    extent content via the segmented reader; symlink path components;
+    POSIX permissions/uid/gid mapping; read-only (mutations return
+    ErrWriteUnsupported instead of panicking)
 - [x] System area MBR partition table parsing and generation
   - `systemarea.MBR` with parse (`ParseMBR`), marshal, CHS synthesis
 - [x] GPT support for UEFI hybrid ISOs
