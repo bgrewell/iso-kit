@@ -15,7 +15,10 @@ type CreateOptions struct {
 	Preparer      string
 	RootDir       string
 	JolietEnabled bool
-	Logger        *logging.Logger
+	// RockRidgeEnabled controls whether created images carry Rock Ridge
+	// (POSIX metadata) extensions. Defaults to true.
+	RockRidgeEnabled bool
+	Logger           *logging.Logger
 }
 
 type CreateOption func(*CreateOptions)
@@ -41,6 +44,12 @@ func WithRootDir(rootDir string) CreateOption {
 func WithJolietEnabled(jolietEnabled bool) CreateOption {
 	return func(o *CreateOptions) {
 		o.JolietEnabled = jolietEnabled
+	}
+}
+
+func WithCreateRockRidgeEnabled(rockRidgeEnabled bool) CreateOption {
+	return func(o *CreateOptions) {
+		o.RockRidgeEnabled = rockRidgeEnabled
 	}
 }
 

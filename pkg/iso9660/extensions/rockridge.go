@@ -1,8 +1,6 @@
 package extensions
 
 import (
-	"bytes"
-	"encoding/binary"
 	"errors"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/encoding"
 	"io/fs"
@@ -85,6 +83,22 @@ type RockRidgeExtensions struct {
 
 	// SF - Sparse file info (if applicable)
 	IsSparse *bool
+
+	// CE - Continuation of the system use area elsewhere on the volume.
+	// The parser follows this to merge entries recorded in the
+	// continuation area; it is not itself a Rock Ridge attribute.
+	Continuation *ContinuationArea
+}
+
+// ContinuationArea locates a SUSP continuation of a system use field, as
+// carried by a "CE" entry.
+type ContinuationArea struct {
+	// Logical block number of the continuation area
+	Block uint32
+	// Byte offset of the continuation within the block
+	Offset uint32
+	// Length in bytes of the continuation
+	Length uint32
 }
 
 // HasRockRidge determines if any Rock Ridge extensions were set.
@@ -96,112 +110,119 @@ func (r *RockRidgeExtensions) HasRockRidge() bool {
 		r.AccessTime != nil || r.IsSparse != nil
 }
 
+// UnmarshalRockRidge parses a system use field into Rock Ridge extensions.
+// If the field ends with a CE entry, the returned extensions carry a
+// Continuation pointer the caller must follow (see ParseInto) to pick up
+// the remaining entries.
 func UnmarshalRockRidge(data []byte) (*RockRidgeExtensions, error) {
-	if len(data) < 2 {
+	if len(data) < 4 {
 		return nil, errors.New("invalid Rock Ridge data")
 	}
-
 	rr := &RockRidgeExtensions{}
-	reader := bytes.NewReader(data)
+	if err := rr.ParseInto(data); err != nil {
+		return nil, err
+	}
+	return rr, nil
+}
 
-	for reader.Len() > 4 {
-		// Read signature (2-byte identifier)
-		var sig [2]byte
-		if err := binary.Read(reader, binary.LittleEndian, &sig); err != nil {
-			return nil, err
+// ParseInto parses a system use area (or a continuation of one) and merges
+// the entries into the receiver. NM entries with the continue flag append
+// to the accumulated alternate name, as do SL component continuations.
+func (rr *RockRidgeExtensions) ParseInto(data []byte) error {
+	offset := 0
+	// A fresh CE in this area replaces any CE already consumed by the
+	// caller; clear it so the caller can detect whether this area chains
+	// further.
+	rr.Continuation = nil
+
+	for offset+4 <= len(data) {
+		sig := string(data[offset : offset+2])
+		length := int(data[offset+2])
+
+		// A zero length or an ST entry terminates the area; unknown
+		// trailing pad bytes also stop cleanly here.
+		if length < 4 || offset+length > len(data) {
+			break
 		}
-		entryType := string(sig[:])
+		payload := data[offset+4 : offset+length]
+		offset += length
 
-		// Read length (1 byte)
-		var length byte
-		if err := binary.Read(reader, binary.LittleEndian, &length); err != nil {
-			return nil, err
-		}
-
-		// Read version (1 byte)
-		var version byte
-		if err := binary.Read(reader, binary.LittleEndian, &version); err != nil {
-			return nil, err
-		}
-
-		// Read payload
-		payloadLen := int(length) - 4
-		payload := make([]byte, payloadLen)
-		if _, err := reader.Read(payload); err != nil {
-			return nil, err
-		}
-
-		switch RockRidgeEntryType(entryType) {
-		case POSIX_FILE_PERMS: // PX (POSIX permissions)
+		switch RockRidgeEntryType(sig) {
+		case POSIX_FILE_PERMS: // PX: mode, nlink, uid, gid (+ optional serial)
 			if len(payload) >= 32 {
-				// Payload is the bytes from offset 4 to 36 (32 bytes) ... technically there are another 8 bytes for the
-				// file serial number but that generally hasn't been present so it is ignored here.
-				// Decode 8-byte File Mode (Permissions)
-				mode, err := encoding.UnmarshalUint32LSBMSB([8]byte(payload[0:8]))
-				if err == nil {
+				if mode, err := encoding.UnmarshalUint32LSBMSB([8]byte(payload[0:8])); err == nil {
 					permissions := parseFileMode(mode)
 					rr.Permissions = &permissions
 				}
-
-				// Decode 8-byte Number of Links
-				_, err = encoding.UnmarshalUint32LSBMSB([8]byte(payload[8:16]))
-				if err != nil {
-					return nil, errors.New("failed to parse PX link count")
-				}
-
-				// Decode 8-byte UID
-				uid, err := encoding.UnmarshalUint32LSBMSB([8]byte(payload[16:24]))
-				if err == nil {
+				if uid, err := encoding.UnmarshalUint32LSBMSB([8]byte(payload[16:24])); err == nil {
 					rr.UID = &uid
 				}
-
-				// Decode 8-byte GID
-				gid, err := encoding.UnmarshalUint32LSBMSB([8]byte(payload[24:32]))
-				if err == nil {
+				if gid, err := encoding.UnmarshalUint32LSBMSB([8]byte(payload[24:32])); err == nil {
 					rr.GID = &gid
 				}
 			}
-		case TIME_STAMPS: // TF (Timestamps)
-			// Rock Ridge TF entry uses a **variable-length encoding**
-			offset := 0
-			for offset < len(payload) {
-				flag := payload[offset]
-				offset++
 
-				if flag&0x01 != 0 && offset+7 <= len(payload) { // Creation time
-					seconds := int64(binary.LittleEndian.Uint32(payload[offset : offset+4]))
-					rr.CreationTime = new(time.Time)
-					*rr.CreationTime = time.Unix(seconds, 0)
-					offset += 7
+		case POSIX_DEVICE_NUM: // PN: major, minor
+			if len(payload) >= 16 {
+				if major, err := encoding.UnmarshalUint32LSBMSB([8]byte(payload[0:8])); err == nil {
+					rr.Major = &major
 				}
-
-				if flag&0x02 != 0 && offset+7 <= len(payload) { // Modification time
-					seconds := int64(binary.LittleEndian.Uint32(payload[offset : offset+4]))
-					rr.ModificationTime = new(time.Time)
-					*rr.ModificationTime = time.Unix(seconds, 0)
-					offset += 7
-				}
-
-				if flag&0x04 != 0 && offset+7 <= len(payload) { // Access time
-					seconds := int64(binary.LittleEndian.Uint32(payload[offset : offset+4]))
-					rr.AccessTime = new(time.Time)
-					*rr.AccessTime = time.Unix(seconds, 0)
-					offset += 7
+				if minor, err := encoding.UnmarshalUint32LSBMSB([8]byte(payload[8:16])); err == nil {
+					rr.Minor = &minor
 				}
 			}
 
-		case ALTERNATE_NAME: // NM (Alternate name)
-			// Flags (NM Flags) - 8-bit number. The following bits are defined:
-			// 	 Bit 0: Continuation - If set to 1, the Name Content record is continued in the next "NM" entry.
-			//   Bit 1: Current - If set to 1, the Name Content record refers to the current directory.
-			//   Bit 2: Parent - If set to 1, the Name Content record refers to the parent directory.
-			//   Bit 3: Reserved - Should be set to 0.
-			//   Bit 4: Reserved - Should be set to 0.
-			//   Bit 5: Historical - Historically contains the network node name.
-			//   Bit 6: Reserved - Should be set to 0.
-			//   Bit 7: Reserved - Should be set to 0.
+		case TIME_STAMPS: // TF: flag byte, then timestamps in flag-bit order
+			if len(payload) < 1 {
+				break
+			}
 			flags := payload[0]
-			rr.AlternateNameFlags = &NameEntryFlags{
+			stampLen := 7
+			longForm := flags&0x80 != 0
+			if longForm {
+				stampLen = 17
+			}
+			pos := 1
+			readStamp := func() (time.Time, bool) {
+				if pos+stampLen > len(payload) {
+					return time.Time{}, false
+				}
+				var t time.Time
+				var err error
+				if longForm {
+					t, err = encoding.UnmarshalDateTime([17]byte(payload[pos : pos+17]))
+				} else {
+					t, err = encoding.UnmarshalRecordingDateTime([7]byte(payload[pos : pos+7]))
+				}
+				pos += stampLen
+				return t, err == nil
+			}
+			// Timestamps appear in flag-bit order: creation, modify,
+			// access, attributes, backup, expiration, effective.
+			if flags&0x01 != 0 {
+				if t, ok := readStamp(); ok {
+					rr.CreationTime = &t
+				}
+			}
+			if flags&0x02 != 0 {
+				if t, ok := readStamp(); ok {
+					rr.ModificationTime = &t
+				}
+			}
+			if flags&0x04 != 0 {
+				if t, ok := readStamp(); ok {
+					rr.AccessTime = &t
+				}
+			}
+			// Remaining timestamp types (attributes, backup, expiration,
+			// effective) are consumed implicitly by stopping here.
+
+		case ALTERNATE_NAME: // NM: flags byte then name content
+			if len(payload) < 1 {
+				break
+			}
+			flags := payload[0]
+			nameFlags := &NameEntryFlags{
 				Continue:  flags&0x01 > 0,
 				Current:   flags&0x02 > 0,
 				Parent:    flags&0x04 > 0,
@@ -211,88 +232,209 @@ func UnmarshalRockRidge(data []byte) (*RockRidgeExtensions, error) {
 				Reserved4: flags&0x40 > 0,
 				Reserved5: flags&0x80 > 0,
 			}
-			rr.AlternateName = new(string)
-			*rr.AlternateName = string(payload[1:])
+			// A prior NM with the continue flag set means this content
+			// appends to the accumulated name.
+			if rr.AlternateName != nil && rr.AlternateNameFlags != nil && rr.AlternateNameFlags.Continue {
+				appended := *rr.AlternateName + string(payload[1:])
+				rr.AlternateName = &appended
+			} else {
+				name := string(payload[1:])
+				rr.AlternateName = &name
+			}
+			rr.AlternateNameFlags = nameFlags
 
-		case SYMBOLIC_LINK: // SL (Symbolic link)
-			rr.SymlinkTarget = new(string)
-			*rr.SymlinkTarget = string(payload[1:]) // Skip flags byte
+		case SYMBOLIC_LINK: // SL: flags byte then component records
+			if len(payload) < 1 {
+				break
+			}
+			continued := rr.SymlinkTarget != nil && rr.SymlinkFlags != nil && *rr.SymlinkFlags&0x01 != 0
+			prefix := ""
+			if continued {
+				prefix = *rr.SymlinkTarget
+			}
+			target := joinSLComponents(prefix, parseSLComponents(payload[1:]))
+			flags := payload[0]
+			rr.SymlinkFlags = &flags
+			rr.SymlinkTarget = &target
+
+		case CHILD_LINK: // CL: LBA of relocated directory
+			if len(payload) >= 8 {
+				if lba, err := encoding.UnmarshalUint32LSBMSB([8]byte(payload[0:8])); err == nil {
+					rr.ChildLinkLBA = &lba
+				}
+			}
+
+		case PARENT_LINK: // PL: LBA of original parent
+			if len(payload) >= 8 {
+				if lba, err := encoding.UnmarshalUint32LSBMSB([8]byte(payload[0:8])); err == nil {
+					rr.ParentLinkLBA = &lba
+				}
+			}
+
+		case RELOCATED_DIR: // RE: marker only
+			relocated := true
+			rr.IsRelocated = &relocated
+
+		case SPARSE_FILE: // SF: marker; virtual size details are not retained
+			sparse := true
+			rr.IsSparse = &sparse
+
+		case "CE": // SUSP continuation area pointer
+			if len(payload) >= 24 {
+				block, errB := encoding.UnmarshalUint32LSBMSB([8]byte(payload[0:8]))
+				areaOffset, errO := encoding.UnmarshalUint32LSBMSB([8]byte(payload[8:16]))
+				areaLen, errL := encoding.UnmarshalUint32LSBMSB([8]byte(payload[16:24]))
+				if errB == nil && errO == nil && errL == nil {
+					rr.Continuation = &ContinuationArea{Block: block, Offset: areaOffset, Length: areaLen}
+				}
+			}
+
+		case "ST": // SUSP terminator
+			return nil
+
+			// SP, ER, ES, and unknown entries are skipped.
 		}
 	}
 
-	return rr, nil
+	return nil
 }
 
-// MarshalRockRidge serializes Rock Ridge extension fields into ISO format.
+// parseSLComponents decodes SL component records into path components.
+// A root component is represented as "/".
+func parseSLComponents(data []byte) []string {
+	var components []string
+	pos := 0
+	for pos+2 <= len(data) {
+		flags := data[pos]
+		clen := int(data[pos+1])
+		pos += 2
+		if pos+clen > len(data) {
+			break
+		}
+		content := string(data[pos : pos+clen])
+		pos += clen
+
+		switch {
+		case flags&0x08 != 0: // root
+			components = append(components, "/")
+		case flags&0x02 != 0: // current directory
+			components = append(components, ".")
+		case flags&0x04 != 0: // parent directory
+			components = append(components, "..")
+		default:
+			components = append(components, content)
+		}
+	}
+	return components
+}
+
+// joinSLComponents assembles a symlink target from a previously
+// accumulated prefix (from an SL entry with the continue flag) and the
+// components of the current entry.
+func joinSLComponents(prefix string, components []string) string {
+	out := prefix
+	for _, c := range components {
+		switch {
+		case c == "/":
+			out += "/"
+		case out == "" || out == "/":
+			out += c
+		default:
+			out += "/" + c
+		}
+	}
+	return out
+}
+
+// MarshalRockRidge serializes Rock Ridge extension fields into a sequence
+// of correctly encoded SUSP/RRIP entries. The result is a flat byte
+// sequence; callers responsible for directory records must handle
+// splitting into continuation areas when the result does not fit the
+// record's system use field (see the pack layout engine).
 func MarshalRockRidge(rr *RockRidgeExtensions) ([]byte, error) {
-	var buf bytes.Buffer
-
-	//TODO: Fix this whole function, there were a lot of errors with sizes and offsets
-	if rr.UID != nil && rr.GID != nil && rr.Permissions != nil {
-		buf.Write([]byte("PX"))           // Signature
-		buf.WriteByte(10 + 4)             // Length (10 bytes data + header)
-		buf.WriteByte(ROCK_RIDGE_VERSION) // Version
-		binary.Write(&buf, binary.LittleEndian, *rr.UID)
-		binary.Write(&buf, binary.LittleEndian, *rr.GID)
-		binary.Write(&buf, binary.LittleEndian, *rr.Permissions)
+	entries, err := BuildRockRidgeEntries(rr)
+	if err != nil {
+		return nil, err
 	}
+	var out []byte
+	for _, e := range entries {
+		out = append(out, e...)
+	}
+	return out, nil
+}
 
+// BuildRockRidgeEntries produces the individual SUSP/RRIP entries for the
+// given extensions, in canonical order (RR, PX, PN, SL, NM, CL, PL, RE,
+// TF). Entries are returned separately so a layout engine can split them
+// between a record's system use field and a continuation area.
+func BuildRockRidgeEntries(rr *RockRidgeExtensions) ([][]byte, error) {
+	var entries [][]byte
+	var rrFlags byte
+
+	if rr.Permissions != nil {
+		rrFlags |= 0x01
+		var uid, gid uint32
+		if rr.UID != nil {
+			uid = *rr.UID
+		}
+		if rr.GID != nil {
+			gid = *rr.GID
+		}
+		entries = append(entries, BuildPX(*rr.Permissions, 1, uid, gid))
+	}
 	if rr.Major != nil && rr.Minor != nil {
-		buf.Write([]byte("PN"))           // Signature
-		buf.WriteByte(8 + 4)              // Length (8 bytes data + header)
-		buf.WriteByte(ROCK_RIDGE_VERSION) // Version
-		binary.Write(&buf, binary.LittleEndian, *rr.Major)
-		binary.Write(&buf, binary.LittleEndian, *rr.Minor)
+		rrFlags |= 0x02
+		entries = append(entries, BuildPN(*rr.Major, *rr.Minor))
 	}
-
 	if rr.SymlinkTarget != nil {
-		buf.Write([]byte("SL")) // Signature
-		buf.WriteByte(byte(len(*rr.SymlinkTarget) + 4))
-		buf.WriteByte(ROCK_RIDGE_VERSION)
-		buf.WriteString(*rr.SymlinkTarget)
+		rrFlags |= 0x04
+		slEntries, err := BuildSL(*rr.SymlinkTarget)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, slEntries...)
 	}
-
 	if rr.AlternateName != nil {
-		buf.Write([]byte("NM")) // Signature
-		buf.WriteByte(byte(len(*rr.AlternateName) + 4))
-		buf.WriteByte(ROCK_RIDGE_VERSION)
-		buf.WriteString(*rr.AlternateName)
+		rrFlags |= 0x08
+		entries = append(entries, BuildNM(*rr.AlternateName)...)
 	}
-
 	if rr.ChildLinkLBA != nil {
-		buf.Write([]byte("CL")) // Signature
-		buf.WriteByte(4 + 4)
-		buf.WriteByte(ROCK_RIDGE_VERSION)
-		binary.Write(&buf, binary.LittleEndian, *rr.ChildLinkLBA)
+		rrFlags |= 0x10
+		entries = append(entries, BuildCL(*rr.ChildLinkLBA))
 	}
-
 	if rr.ParentLinkLBA != nil {
-		buf.Write([]byte("PL")) // Signature
-		buf.WriteByte(4 + 4)
-		buf.WriteByte(ROCK_RIDGE_VERSION)
-		binary.Write(&buf, binary.LittleEndian, *rr.ParentLinkLBA)
+		rrFlags |= 0x20
+		entries = append(entries, BuildPL(*rr.ParentLinkLBA))
 	}
-
 	if rr.IsRelocated != nil && *rr.IsRelocated {
-		buf.Write([]byte("RE")) // Signature
-		buf.WriteByte(4)
-		buf.WriteByte(ROCK_RIDGE_VERSION)
+		rrFlags |= 0x40
+		entries = append(entries, BuildRE())
 	}
 
+	var creation, modification, access time.Time
 	if rr.CreationTime != nil {
-		buf.Write([]byte("TF")) // Signature
-		buf.WriteByte(7 + 4)
-		buf.WriteByte(ROCK_RIDGE_VERSION)
-		binary.Write(&buf, binary.LittleEndian, uint32(rr.CreationTime.Unix()))
+		creation = *rr.CreationTime
+	}
+	if rr.ModificationTime != nil {
+		modification = *rr.ModificationTime
+	}
+	if rr.AccessTime != nil {
+		access = *rr.AccessTime
+	}
+	if !creation.IsZero() || !modification.IsZero() || !access.IsZero() {
+		rrFlags |= 0x80
+		tf, err := BuildTF(creation, modification, access)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, tf)
 	}
 
-	if rr.IsSparse != nil && *rr.IsSparse {
-		buf.Write([]byte("SF")) // Signature
-		buf.WriteByte(4)
-		buf.WriteByte(ROCK_RIDGE_VERSION)
+	if len(entries) == 0 {
+		return nil, nil
 	}
-
-	return buf.Bytes(), nil
+	// The legacy RR entry announcing which fields follow leads the area.
+	return append([][]byte{BuildRR(rrFlags)}, entries...), nil
 }
 
 // parseFileMode converts a 32-bit unsigned integer into an fs.FileMode struct

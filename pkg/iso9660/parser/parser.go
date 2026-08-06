@@ -528,10 +528,28 @@ func (p *Parser) ReadDirectoryRecords(lba uint32, dataLength uint32, joliet bool
 		dr.ObjectSize = dr.DataLength
 
 		// **Parse Rock Ridge extensions if present**
-		var rr *extensions.RockRidgeExtensions
 		if len(dr.SystemUse) > 0 {
-			rr, err = extensions.UnmarshalRockRidge(dr.SystemUse)
-			if err == nil {
+			rr, rrErr := extensions.UnmarshalRockRidge(dr.SystemUse)
+			if rrErr == nil {
+				// Follow SUSP CE continuation areas, merging entries
+				// recorded outside the directory record. Bounded to
+				// guard against cyclic chains in corrupt images.
+				for hops := 0; rr.Continuation != nil && hops < 8; hops++ {
+					cont := rr.Continuation
+					if cont.Length == 0 || cont.Length > consts.ISO9660_SECTOR_SIZE {
+						break
+					}
+					contData := make([]byte, cont.Length)
+					contOffset := int64(cont.Block)*int64(sectorSize) + int64(cont.Offset)
+					if _, err := p.reader.ReadAt(contData, contOffset); err != nil {
+						p.logger.Debug("Failed to read Rock Ridge continuation area", "offset", contOffset, "error", err)
+						break
+					}
+					if err := rr.ParseInto(contData); err != nil {
+						p.logger.Debug("Failed to parse Rock Ridge continuation area", "offset", contOffset, "error", err)
+						break
+					}
+				}
 				dr.RockRidge = rr
 			}
 		}

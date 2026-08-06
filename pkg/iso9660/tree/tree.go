@@ -38,6 +38,11 @@ type Node struct {
 
 	mode    os.FileMode
 	modTime time.Time
+	uid     uint32
+	gid     uint32
+
+	// Symlink target; non-empty only for symbolic link nodes.
+	symlinkTarget string
 
 	// PackedLocation and PackedSize are assigned by the layout engine
 	// before writing. PackedSize for a directory is the extent size in
@@ -82,6 +87,21 @@ func (n *Node) SetMode(mode os.FileMode) { n.mode = mode }
 
 // SetModTime sets the modification time.
 func (n *Node) SetModTime(t time.Time) { n.modTime = t }
+
+// UID returns the POSIX user ID (0 unless set).
+func (n *Node) UID() uint32 { return n.uid }
+
+// GID returns the POSIX group ID (0 unless set).
+func (n *Node) GID() uint32 { return n.gid }
+
+// SetOwnership sets the POSIX user and group IDs.
+func (n *Node) SetOwnership(uid, gid uint32) { n.uid, n.gid = uid, gid }
+
+// IsSymlink reports whether the node is a symbolic link.
+func (n *Node) IsSymlink() bool { return n.symlinkTarget != "" }
+
+// SymlinkTarget returns the symlink target path, or "" for non-links.
+func (n *Node) SymlinkTarget() string { return n.symlinkTarget }
 
 // IsPending reports whether the node's content lives in memory rather than
 // in a backing image.
@@ -228,6 +248,37 @@ func (n *Node) AddFile(path string, data []byte) (*Node, error) {
 		size:    uint32(len(data)),
 		mode:    0o644,
 		modTime: time.Now(),
+	}
+	dir.children[name] = node
+	return node, nil
+}
+
+// AddSymlink inserts a symbolic link node at the given path pointing at
+// target, creating parent directories as needed. The link itself carries
+// no content; the target is recorded verbatim (Rock Ridge SL entry on
+// write).
+func (n *Node) AddSymlink(path, target string) (*Node, error) {
+	if target == "" {
+		return nil, fmt.Errorf("symlink target is empty")
+	}
+	parts := splitPath(path)
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("symlink path is empty")
+	}
+	name := StripVersion(parts[len(parts)-1])
+	dir, err := n.mkdirs(parts[:len(parts)-1])
+	if err != nil {
+		return nil, err
+	}
+	if existing := dir.children[name]; existing != nil && existing.isDir {
+		return nil, fmt.Errorf("path %q is a directory", existing.FullPath())
+	}
+	node := &Node{
+		name:          name,
+		parent:        dir,
+		symlinkTarget: target,
+		mode:          os.ModeSymlink | 0o777,
+		modTime:       time.Now(),
 	}
 	dir.children[name] = node
 	return node, nil
