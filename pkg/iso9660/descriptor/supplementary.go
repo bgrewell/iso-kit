@@ -174,9 +174,10 @@ type SupplementaryVolumeDescriptorBody struct {
 	VolumeIdentifier string `json:"volume_identifier"`
 	// Unused Field is a block of unused bytes from BP73-80 and should contain only 0x00 bytes
 	UnusedField1 [8]byte `json:"unused_field_1"`
-	// Volume Space Size is a 8 byte field that the spec doesn't seem to address how it's used. (Table 6 of ECMA-199
-	// incorrectly lists this as 32 bytes)
-	VolumeSpaceSize [8]byte `json:"volume_space_size"`
+	// Volume Space Size specifies the number of logical blocks in which the
+	// Volume Space of the volume is recorded.
+	//  | Encoding: BothByteOrder
+	VolumeSpaceSize uint32 `json:"volume_space_size"`
 	// Escape Sequences specifies one or more escape sequences according to ISO 2022 that designate the G0 graphic
 	// character set and, optionally, the G1 graphic character set to be used in an 8-bit environment according to
 	// ISO 2022 to interpret descriptor fields related to the Directory Hierarchy identified by this Volume Descriptor
@@ -189,15 +190,16 @@ type SupplementaryVolumeDescriptorBody struct {
 	// set of a1-characters is identical with the set of a-characters and that the set of d1-characters is identical
 	// with the set of d-characters. In this case both sets are coded according to ECMA-6.
 	EscapeSequences [32]byte `json:"escape_sequences"`
-	// Volume Set Size is a numerical value that is 4 bytes in size and is not addressed with regard to usage in the
-	// spec. Note: look into more, probably a uint16 stored as both little and big endian.
-	VolumeSetSize [4]byte `json:"volume_set_size"`
-	// Volume Sequence Number is a numerical value that is 4 bytes in size and is not addressed with regard to usage in
-	// the spec. Note: look into more, probably a uint16 stored as both little and big endian.
-	VolumeSequenceNumber [4]byte `json:"volume_sequence_number"`
-	// Logical Block Size is a numerical value that is 4 bytes in size and is not addressed with regard to usage in the
-	// spec. Note: look into more, probably a uint16 stored as both little and big endian.
-	LogicalBlockSize [4]byte `json:"logical_block_size"`
+	// Volume Set Size specifies the assigned Volume Set size of the volume.
+	//  | Encoding: BothByteOrder
+	VolumeSetSize uint16 `json:"volume_set_size"`
+	// Volume Sequence Number specifies the ordinal number of the volume in
+	// the Volume Set.
+	//  | Encoding: BothByteOrder
+	VolumeSequenceNumber uint16 `json:"volume_sequence_number"`
+	// Logical Block Size specifies the size in bytes of a logical block.
+	//  | Encoding: BothByteOrder
+	LogicalBlockSize uint16 `json:"logical_block_size"`
 	// Path Table Size specifies the length in bytes of a recorded occurrence of the Path Table identified by this
 	// Volume Descriptor.
 	//  | Encoding: BothByteOrder
@@ -353,24 +355,28 @@ func (svdb *SupplementaryVolumeDescriptorBody) Marshal() ([]byte, error) {
 	copy(data[offset:offset+8], svdb.UnusedField1[:])
 	offset += 8
 
-	// 5. volumeSpaceSize: 8 bytes.
-	copy(data[offset:offset+8], svdb.VolumeSpaceSize[:])
+	// 5. volumeSpaceSize: 8 bytes (both-byte orders for uint32).
+	vssBytes := encoding.MarshalBothByteOrders32(svdb.VolumeSpaceSize)
+	copy(data[offset:offset+8], vssBytes[:])
 	offset += 8
 
 	// 6. EscapeSequences: 32 bytes.
 	copy(data[offset:offset+32], svdb.EscapeSequences[:])
 	offset += 32
 
-	// 7. volumeSetSize: 4 bytes
-	copy(data[offset:offset+4], svdb.VolumeSetSize[:])
+	// 7. volumeSetSize: 4 bytes (both-byte orders for uint16).
+	vsBytes := encoding.MarshalBothByteOrders16(svdb.VolumeSetSize)
+	copy(data[offset:offset+4], vsBytes[:])
 	offset += 4
 
-	// 8. volumeSequenceNumber: 4 bytes
-	copy(data[offset:offset+4], svdb.VolumeSequenceNumber[:])
+	// 8. volumeSequenceNumber: 4 bytes (both-byte orders for uint16).
+	vsnBytes := encoding.MarshalBothByteOrders16(svdb.VolumeSequenceNumber)
+	copy(data[offset:offset+4], vsnBytes[:])
 	offset += 4
 
-	// 9. logicalBlockSize: 4 bytes
-	copy(data[offset:offset+4], svdb.LogicalBlockSize[:])
+	// 9. logicalBlockSize: 4 bytes (both-byte orders for uint16).
+	lbsBytes := encoding.MarshalBothByteOrders16(svdb.LogicalBlockSize)
+	copy(data[offset:offset+4], lbsBytes[:])
 	offset += 4
 
 	// 10. pathTableSize: 8 bytes (both-byte orders for uint32).
@@ -556,23 +562,47 @@ func (svdb *SupplementaryVolumeDescriptorBody) Unmarshal(data []byte) error {
 	copy(svdb.UnusedField1[:], data[offset:offset+8])
 	offset += 8
 
-	// 5. Volume Space Size: 8 bytes
-	copy(svdb.VolumeSpaceSize[:], data[offset:offset+8])
+	// 5. Volume Space Size: 8 bytes (both-byte orders for uint32)
+	var vssBytes [8]byte
+	copy(vssBytes[:], data[offset:offset+8])
+	volumeSpaceSize, err := encoding.UnmarshalUint32LSBMSB(vssBytes)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal volumeSpaceSize: %w", err)
+	}
+	svdb.VolumeSpaceSize = volumeSpaceSize
 	offset += 8
 
 	// 6. Skip over the Escape Sequences: 32 bytes (Used to determine Joliet) since it was read above
 	offset += 32
 
-	// 7. Volume Set Size: 4 bytes
-	copy(svdb.VolumeSetSize[:], data[offset:offset+4])
+	// 7. Volume Set Size: 4 bytes (both-byte orders for uint16)
+	var vsBytes [4]byte
+	copy(vsBytes[:], data[offset:offset+4])
+	volumeSetSize, err := encoding.UnmarshalUint16LSBMSB(vsBytes)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal volumeSetSize: %w", err)
+	}
+	svdb.VolumeSetSize = volumeSetSize
 	offset += 4
 
-	// 8. Volume Sequence Number: 4 bytes
-	copy(svdb.VolumeSequenceNumber[:], data[offset:offset+4])
+	// 8. Volume Sequence Number: 4 bytes (both-byte orders for uint16)
+	var vsnBytes [4]byte
+	copy(vsnBytes[:], data[offset:offset+4])
+	volumeSequenceNumber, err := encoding.UnmarshalUint16LSBMSB(vsnBytes)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal volumeSequenceNumber: %w", err)
+	}
+	svdb.VolumeSequenceNumber = volumeSequenceNumber
 	offset += 4
 
-	// 9. Logical Block Size: 4 bytes
-	copy(svdb.LogicalBlockSize[:], data[offset:offset+4])
+	// 9. Logical Block Size: 4 bytes (both-byte orders for uint16)
+	var lbsBytes [4]byte
+	copy(lbsBytes[:], data[offset:offset+4])
+	logicalBlockSize, err := encoding.UnmarshalUint16LSBMSB(lbsBytes)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal logicalBlockSize: %w", err)
+	}
+	svdb.LogicalBlockSize = logicalBlockSize
 	offset += 4
 
 	// 10. Path Table Size: 8 bytes
