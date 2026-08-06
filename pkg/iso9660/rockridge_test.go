@@ -103,13 +103,11 @@ func TestRockRidgeSymlink(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, iso.AddFile("target.txt", []byte("data")))
-	_, err = iso.root.AddSymlink("link.txt", "target.txt")
+	err = iso.AddSymlink("link.txt", "target.txt")
 	require.NoError(t, err)
-	_, err = iso.root.AddSymlink("abs-link", "/usr/share/doc")
+	err = iso.AddSymlink("abs-link", "/usr/share/doc")
 	require.NoError(t, err)
-	_, err = iso.root.AddSymlink("rel-link", "../up/../over/./there")
-	require.NoError(t, err)
-	iso.markDirty()
+	require.NoError(t, iso.AddSymlink("rel-link", "../up/../over/./there"))
 
 	path := saveToTempFile(t, iso)
 
@@ -194,9 +192,7 @@ func TestRockRidgeInteropXorriso(t *testing.T) {
 	require.NoError(t, iso.AddFile("Mixed Case Name.txt", []byte("rr interop\n")))
 	node := isoLookup(t, iso, "Mixed Case Name.txt")
 	node.SetMode(0o640)
-	_, err = iso.root.AddSymlink("the-link", "Mixed Case Name.txt")
-	require.NoError(t, err)
-	iso.markDirty()
+	require.NoError(t, iso.AddSymlink("the-link", "Mixed Case Name.txt"))
 	path := saveToTempFile(t, iso)
 
 	out, err := exec.Command(xorriso, "-indev", path, "-find", "/", "-exec", "lsdl").CombinedOutput()
