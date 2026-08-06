@@ -231,42 +231,71 @@ func (et *ElTorito) GetObjects() []info.ImageObject {
 	return []info.ImageObject{et}
 }
 
+// Marshal serializes the boot catalog into one 2048-byte sector following
+// the El Torito specification: a validation entry, the initial/default
+// entry, and — for additional entries — section headers grouping section
+// entries by platform.
 func (et *ElTorito) Marshal() ([]byte, error) {
 	if len(et.Entries) == 0 {
 		return nil, fmt.Errorf("El Torito Boot Catalog has no entries")
 	}
 
-	// Boot Catalog is stored in 2048-byte sectors, ensure correct alignment
 	data := make([]byte, consts.ISO9660_SECTOR_SIZE)
 
-	// 1️⃣ Write Validation Entry (First 32 bytes)
-	data[0] = 0x01                    // Header ID
-	copy(data[1:6], "EL TORITO SPEC") // Identifier
+	// Validation entry (32 bytes): header ID, platform, ID string at
+	// bytes 4-27, checksum at 0x1C making the 16-bit word sum zero, and
+	// the 0x55AA key bytes.
+	data[0] = 0x01
+	data[1] = byte(et.Entries[0].Platform)
+	copy(data[4:28], consts.EL_TORITO_BOOT_SYSTEM_ID)
 	data[0x1E] = 0x55
 	data[0x1F] = 0xAA
-
-	// Compute checksum
-	checksum := uint16(0)
+	var checksum uint16
 	for i := 0; i < 32; i += 2 {
 		checksum += binary.LittleEndian.Uint16(data[i : i+2])
 	}
-	binary.LittleEndian.PutUint16(data[0x1C:0x1E], -checksum) // Store negative checksum
+	binary.LittleEndian.PutUint16(data[0x1C:0x1E], uint16(0x10000-uint32(checksum)))
 
-	// 2️⃣ Write Initial Boot Entry (First Boot Entry, starts at offset 32)
-	offset := 32
-	for _, entry := range et.Entries {
-		if offset+32 > len(data) {
-			return nil, fmt.Errorf("Boot catalog exceeds sector size limit")
+	writeEntry := func(offset int, entry *ElToritoEntry) {
+		if entry.Bootable {
+			data[offset] = 0x88
 		}
+		data[offset+1] = byte(entry.Emulation)
+		binary.LittleEndian.PutUint16(data[offset+2:], entry.LoadSegment)
+		data[offset+4] = byte(entry.PartitionType)
+		binary.LittleEndian.PutUint16(data[offset+6:], entry.size)
+		binary.LittleEndian.PutUint32(data[offset+8:], entry.location)
+	}
 
-		data[offset] = 0x88                    // Boot Indicator (0x88 = Bootable)
-		data[offset+1] = byte(entry.Platform)  // Platform ID
-		data[offset+2] = byte(entry.Emulation) // Emulation Type
-		binary.LittleEndian.PutUint16(data[offset+4:], entry.LoadSegment)
-		binary.LittleEndian.PutUint16(data[offset+6:], entry.size)     // Size in 512-byte blocks
-		binary.LittleEndian.PutUint32(data[offset+8:], entry.location) // Location in 2048-byte sectors
+	// Initial/default entry.
+	offset := 32
+	writeEntry(offset, et.Entries[0])
+	offset += 32
 
-		offset += 32 // Move to next entry
+	// Additional entries are grouped into sections by platform. Each
+	// group gets a section header (0x91 marks the final header).
+	rest := et.Entries[1:]
+	for start := 0; start < len(rest); {
+		end := start + 1
+		for end < len(rest) && rest[end].Platform == rest[start].Platform {
+			end++
+		}
+		if offset+32*(1+end-start) > len(data) {
+			return nil, fmt.Errorf("boot catalog exceeds sector size limit")
+		}
+		headerID := byte(0x90)
+		if end == len(rest) {
+			headerID = 0x91
+		}
+		data[offset] = headerID
+		data[offset+1] = byte(rest[start].Platform)
+		binary.LittleEndian.PutUint16(data[offset+2:], uint16(end-start))
+		offset += 32
+		for _, entry := range rest[start:end] {
+			writeEntry(offset, entry)
+			offset += 32
+		}
+		start = end
 	}
 
 	return data, nil
@@ -286,16 +315,20 @@ func (et *ElTorito) UnmarshalBinary(data []byte) error {
 	}
 
 	// Parse Validation Entry
-	err := parseValidationEntry(data[:32])
+	platform, err := parseValidationEntry(data[:32])
 	if err != nil {
 		if et.Logger != nil {
 			et.Logger.Error(err, "Boot Catalog: invalid Validation Entry")
 		}
 		return fmt.Errorf("Boot Catalog: invalid Validation Entry: %w", err)
 	}
+	et.Platform = platform
 
-	// Parse Boot Entries
+	// Parse Boot Entries. The initial/default entry inherits the
+	// validation entry's platform; section entries inherit their section
+	// header's platform.
 	sectionCount := 0
+	currentPlatform := platform
 	for offset := 32; offset < len(data); offset += 32 {
 		entryData := data[offset : offset+32]
 
@@ -310,6 +343,7 @@ func (et *ElTorito) UnmarshalBinary(data []byte) error {
 		// Handle Section Headers
 		if entryData[0] == 0x90 || entryData[0] == 0x91 {
 			sectionCount = int(binary.LittleEndian.Uint16(entryData[2:4]))
+			currentPlatform = Platform(entryData[1])
 			if et.Logger != nil {
 				et.Logger.Debug("Section header found", "offset", offset, "entries", sectionCount)
 			}
@@ -318,7 +352,7 @@ func (et *ElTorito) UnmarshalBinary(data []byte) error {
 
 		// Parse Section Entries
 		if sectionCount > 0 {
-			entry := parseSectionEntry(entryData)
+			entry := parseCatalogEntry(entryData, currentPlatform)
 			if et.Logger != nil {
 				et.Logger.Trace("Parsed section entry", "entry", entry)
 			}
@@ -328,7 +362,7 @@ func (et *ElTorito) UnmarshalBinary(data []byte) error {
 		}
 
 		// Parse Initial/Default Entry
-		entry := parseInitialEntry(entryData)
+		entry := parseCatalogEntry(entryData, platform)
 		if et.Logger != nil {
 			et.Logger.Trace("Parsed initial entry", "entry", entry)
 		}
@@ -344,13 +378,47 @@ func (et *ElTorito) UnmarshalBinary(data []byte) error {
 type ElToritoEntry struct {
 	Platform      Platform      // Target platform
 	Emulation     Emulation     // Emulation mode
-	BootFile      string        // Path to the boot file
+	BootFile      string        // Path to the boot file (in-image path for write, extraction path after ExtractBootImages)
 	HideBootFile  bool          // Whether to hide the boot file in the filesystem
-	LoadSegment   uint16        // Open segment address
+	Bootable      bool          // Boot indicator (0x88 bootable, 0x00 not)
+	LoadSegment   uint16        // Load segment address (0 => traditional 0x7C0)
 	PartitionType PartitionType // Partition type of the boot file
-	size          uint16        // Size of the boot file in 512-byte blocks
-	location      uint32        // Location of the boot file in 2048-byte sectors
+	// LoadSize overrides the sector count (512-byte units) loaded at
+	// boot. Zero selects the full image size. BIOS boot loaders such as
+	// isolinux conventionally use 4.
+	LoadSize uint16
+	// BootInfoTable requests a 56-byte boot information table be patched
+	// into the image at offset 8 when the image is written (isolinux
+	// -boot-info-table semantics).
+	BootInfoTable bool
+	size          uint16 // Size of the boot file in 512-byte blocks
+	location      uint32 // Location of the boot file in 2048-byte sectors
 }
+
+// SetExtent records where the boot image lives in the output image:
+// location in 2048-byte sectors and size in bytes. The catalog's sector
+// count field is derived as 512-byte units, honoring LoadSize when set.
+func (e *ElToritoEntry) SetExtent(location uint32, sizeBytes uint32) {
+	e.location = location
+	if e.LoadSize != 0 {
+		e.size = e.LoadSize
+		return
+	}
+	blocks := (sizeBytes + 511) / 512
+	if blocks > 0xFFFF {
+		blocks = 0xFFFF
+	}
+	if blocks == 0 {
+		blocks = 1
+	}
+	e.size = uint16(blocks)
+}
+
+// Location returns the boot image's location in 2048-byte sectors.
+func (e *ElToritoEntry) Location() uint32 { return e.location }
+
+// SectorCount returns the catalog's load sector count in 512-byte units.
+func (e *ElToritoEntry) SectorCount() uint16 { return e.size }
 
 // SectionHeader represents a header for grouping entries in the boot catalog.
 type SectionHeader struct {
@@ -399,7 +467,7 @@ func (et *ElTorito) BuildBootImageEntries() ([]*filesystem.FileSystemEntry, erro
 			Name:       filename,
 			FullPath:   "/[BOOT]/" + filename, // Logical path inside the ISO
 			IsDir:      false,
-			Size:       uint32(entry.size * 512), // Convert 512-byte block size
+			Size:       uint32(entry.size) * 512, // Convert 512-byte block size
 			Location:   entry.location,
 			Mode:       0444,        // Read-only boot image
 			CreateTime: time.Time{}, // No real timestamp in El Torito
@@ -498,44 +566,39 @@ func IsElTorito(bootSystemIdentifier string) bool {
 	return trimmed == consts.EL_TORITO_BOOT_SYSTEM_ID
 }
 
-func parseInitialEntry(data []byte) *ElToritoEntry {
+// parseCatalogEntry decodes an initial or section entry per the El Torito
+// specification: byte 0 boot indicator, byte 1 boot media type, bytes 2-3
+// load segment, byte 4 system (partition) type, bytes 6-7 sector count,
+// bytes 8-11 load RBA. The platform comes from the validation entry or
+// enclosing section header, not the entry itself.
+func parseCatalogEntry(data []byte, platform Platform) *ElToritoEntry {
 	return &ElToritoEntry{
-		Platform:      Platform(data[1]),
-		Emulation:     Emulation(data[2]),
-		LoadSegment:   binary.LittleEndian.Uint16(data[4:6]),
+		Platform:      platform,
+		Bootable:      data[0] == 0x88,
+		Emulation:     Emulation(data[1] & 0x0F),
+		LoadSegment:   binary.LittleEndian.Uint16(data[2:4]),
 		PartitionType: PartitionType(data[4]),
 		size:          binary.LittleEndian.Uint16(data[6:8]),
 		location:      binary.LittleEndian.Uint32(data[8:12]),
 	}
 }
 
-func parseSectionEntry(data []byte) *ElToritoEntry {
-	return &ElToritoEntry{
-		Platform:      Platform(data[1]),
-		Emulation:     Emulation(data[2]),
-		LoadSegment:   binary.LittleEndian.Uint16(data[4:6]),
-		PartitionType: PartitionType(data[4]),
-		size:          binary.LittleEndian.Uint16(data[6:8]),
-		location:      binary.LittleEndian.Uint32(data[8:12]),
-	}
-}
-
-func parseValidationEntry(data []byte) error {
+func parseValidationEntry(data []byte) (Platform, error) {
 	if len(data) < 32 {
-		return fmt.Errorf("Validation Entry: data too short")
+		return 0, fmt.Errorf("Validation Entry: data too short")
 	}
 	if data[0] != 0x01 {
-		return fmt.Errorf("Validation Entry: invalid header ID %x", data[0])
+		return 0, fmt.Errorf("Validation Entry: invalid header ID %x", data[0])
 	}
 	checksum := uint16(0)
 	for i := 0; i < 32; i += 2 {
 		checksum += binary.LittleEndian.Uint16(data[i : i+2])
 	}
 	if checksum != 0 {
-		return fmt.Errorf("Validation Entry: checksum invalid")
+		return 0, fmt.Errorf("Validation Entry: checksum invalid")
 	}
 	if data[0x1E] != 0x55 || data[0x1F] != 0xAA {
-		return fmt.Errorf("Validation Entry: invalid key bytes %x%x", data[0x1E], data[0x1F])
+		return 0, fmt.Errorf("Validation Entry: invalid key bytes %x%x", data[0x1E], data[0x1F])
 	}
-	return nil
+	return Platform(data[1]), nil
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bgrewell/iso-kit/pkg/iso9660/encoding"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/tree"
 )
 
@@ -89,6 +90,73 @@ func assignIdentifiers(children []*tree.Node, mangled bool) map[*tree.Node]strin
 			id += ";1"
 		}
 		out[child] = id
+	}
+	return out
+}
+
+// Joliet allows 64 UCS-2 characters per identifier.
+const jolietNameMaxLen = 64
+
+// jolietName sanitizes a name for a Joliet directory record: the
+// characters forbidden by the Joliet specification are replaced with '_'
+// and the name is truncated to 64 UTF-16 code units. Case is preserved.
+func jolietName(name string) string {
+	out := make([]rune, 0, len(name))
+	for _, r := range name {
+		switch {
+		case r < 0x20, r == '*', r == '/', r == ':', r == ';', r == '?', r == '\\':
+			out = append(out, '_')
+		default:
+			out = append(out, r)
+		}
+	}
+	// Truncation is by UTF-16 units; supplementary-plane runes cost two.
+	units := 0
+	for i, r := range out {
+		cost := 1
+		if r > 0xFFFF {
+			cost = 2
+		}
+		if units+cost > jolietNameMaxLen {
+			out = out[:i]
+			break
+		}
+		units += cost
+	}
+	if len(out) == 0 {
+		return "_"
+	}
+	return string(out)
+}
+
+// assignJolietIdentifiers produces the UCS-2-encoded on-disk identifier
+// for every child of a directory, deduplicating collisions caused by
+// sanitization or truncation. File identifiers carry the ";1" version
+// suffix before encoding.
+func assignJolietIdentifiers(children []*tree.Node) map[*tree.Node]string {
+	out := make(map[*tree.Node]string, len(children))
+	used := make(map[string]bool, len(children))
+
+	for _, child := range children {
+		name := jolietName(child.Name())
+		if used[name] {
+			for n := 1; ; n++ {
+				tail := fmt.Sprintf("~%d", n)
+				trimmed := name
+				if len(trimmed)+len(tail) > jolietNameMaxLen {
+					trimmed = trimmed[:jolietNameMaxLen-len(tail)]
+				}
+				if candidate := trimmed + tail; !used[candidate] {
+					name = candidate
+					break
+				}
+			}
+		}
+		used[name] = true
+		if !child.IsDir() {
+			name += ";1"
+		}
+		out[child] = string(encoding.EncodeUCS2BigEndian(name))
 	}
 	return out
 }
