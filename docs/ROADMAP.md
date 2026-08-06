@@ -70,43 +70,49 @@ Every subsequent phase depends on these fixes.
 
 Goal: create and modify ISOs. Largest and most architecturally significant phase.
 
-- [ ] Design and implement mutable in-memory directory tree
-  - TreeNode with parent-child relationships, children map, pending data
-  - Insert, Remove, Lookup, Walk, BuildFromParsed methods
-  - Becomes single source of truth for filesystem state
-- [ ] Implement `ReadFile(path)`
-  - Search tree (or filesystemEntries), delegate to `GetBytes()` for existing files
-  - Return pendingFiles data for in-memory files
-- [ ] Implement `AddFile(path, data)` and `RemoveFile(path)`
-  - Tree-backed operations, create parent dirs as needed, store in pendingFiles
-  - Append ISO 9660 ";1" version suffix, maintain tree/flat-list consistency
-- [ ] Implement `AddDirectory(sourcePath, targetPath)`
-  - `filepath.Walk` with explicit directory records (. and ..) for subdirectories
-- [ ] Implement directory extent writer
-  - Marshal children into 2048-byte sectors, prepend . and .. entries
-  - Zero-pad at sector boundaries (records must not cross boundaries)
-- [ ] Implement path table builder from directory tree
+- [x] Design and implement mutable in-memory directory tree (`pkg/iso9660/tree`)
+  - Node with parent-child relationships, children map, pending data
+  - AddFile, AddDirectory, AddExistingFile, Remove, Lookup, Walk, Directories
+  - Built from parsed entries during Open; single source of truth for Save
+- [x] Implement `ReadFile(path)`
+  - Tree lookup; pending data from memory, existing content streamed from the
+    backing image
+- [x] Implement `AddFile(path, data)` and `RemoveFile(path)`
+  - Tree-backed, create parent dirs as needed; ";1" version suffix appended at
+    marshal time; flat entry list rebuilt lazily from the tree after mutation
+  - Also: `AddDirectory(path)`, `RemoveDirectory(path)`
+- [x] Implement `AddLocalDirectory(sourcePath, targetPath)`
+  - `filepath.Walk` import of a local directory tree, preserving mode/mtime
+- [x] Implement directory extent writer (`pack.go: marshalDirectoryExtent`)
+  - Marshals children into 2048-byte sectors with . and .. entries
+  - Zero-pads at sector boundaries (records never cross boundaries)
+- [x] Implement path table builder from directory tree (`pack.go: buildPathTables`)
   - Breadth-first walk, sequential parent numbers, L-type and M-type output
 - [ ] Promote SVD numeric fields from raw byte arrays to typed values
   - VolumeSpaceSize, VolumeSetSize, etc. — match PVD pattern
-  - Required for Pack() to update SVD programmatically
-- [ ] Implement `Pack()` — the sector layout engine
-  - Calculate descriptor area size (system area + PVD + optional boot/SVDs + terminator)
-  - Assign sector locations: path tables, directory extents (bottom-up), file data
-  - Update cross-references: VolumeSpaceSize, PathTableSize, LocationOfPathTable L/M,
-    each LocationOfExtent and DataLength
-  - Handle Joliet SVD layout separately
-- [ ] Implement `Create()` with proper initialization
+  - Required for Pack() to update SVD programmatically (needed for Joliet write, P2)
+- [x] Implement `Pack()` — the sector layout engine
+  - Assigns sector locations: PVD, terminator, path tables, directory extents
+    (breadth-first), file data
+  - Updates cross-references: VolumeSpaceSize, PathTableSize, LocationOfPathTable
+    L/M, root record location/length, each extent's LocationOfExtent/DataLength
+  - Joliet SVD layout deferred to P2 (SVDs are dropped from rebuilt output with a
+    logged warning)
+- [x] Implement `Create()` with proper initialization
   - SystemArea, PVD with root DirectoryRecord, empty tree, terminator
-  - Optional Joliet SVD, fix getter nil-safety
-- [ ] Rewrite `Save()` for complete ISO output
-  - Pristine re-save (with gap padding) and modified/new ISO (Pack → full write)
-  - Pending files from memory, existing files from isoReader
+  - Joliet SVD deferred to P2 (warned when requested)
+- [x] Rewrite `Save()` for complete ISO output
+  - Pristine passthrough for unmodified opened images; Pack → full rebuild for
+    created/modified images
+  - Pending files written from memory, existing files streamed from isoReader
+    (relocation-safe)
 - [ ] Fix Joliet directory record marshal (UCS-2 re-encoding)
-  - When `dr.Joliet` is true, encode FileIdentifier as UCS-2
+  - When `dr.Joliet` is true, encode FileIdentifier as UCS-2 (with P2 Joliet work)
 - [ ] Add `VolumeDescriptorSet` methods (WriteTo, Validate)
 - [ ] Implement `VolumePartitionDescriptor` Marshal/Unmarshal
-- [ ] End-to-end Create→AddFile→Save→Open verification test
+- [x] End-to-end Create→AddFile→Save→Open verification test
+  - Round-trip tests plus Open→modify→Save→Open, multi-sector directories,
+    empty images, and external-tool interop (isoinfo/xorriso)
 
 ## P2: Extensions — Rock Ridge, Joliet, El Torito Write Support
 

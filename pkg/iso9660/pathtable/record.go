@@ -43,6 +43,36 @@ func NewPathTable(reader io.ReaderAt, location uint32, size int, source string, 
 	return pt, nil
 }
 
+// NewEmptyPathTable creates an empty path table for building an image in
+// memory. Records are added with AddRecord; the table's byte location is
+// assigned later by the layout engine via SetLocation.
+func NewEmptyPathTable(source string, littleEndian bool) *PathTable {
+	return &PathTable{
+		source:       source,
+		littleEndian: littleEndian,
+	}
+}
+
+// AddRecord appends a path table record. Records must be added in the
+// order required by ECMA-119: breadth-first, parents before children,
+// siblings ordered by directory identifier.
+func (pt *PathTable) AddRecord(directoryIdentifier string, locationOfExtent uint32, parentDirectoryNumber uint16) {
+	pt.Records = append(pt.Records, &PathTableRecord{
+		LengthOfDirectoryIdentifier: uint8(len(directoryIdentifier)),
+		LocationOfExtent:            locationOfExtent,
+		ParentDirectoryNumber:       parentDirectoryNumber,
+		DirectoryIdentifier:         directoryIdentifier,
+		littleEndian:                pt.littleEndian,
+	})
+}
+
+// SetLocation assigns the table's on-image sector location and its size in
+// bytes, used by the layout engine after sector assignment.
+func (pt *PathTable) SetLocation(sector uint32, size uint32) {
+	pt.ObjectLocation = int64(sector)
+	pt.ObjectSize = size
+}
+
 // PathTable represents a full path table, containing multiple records.
 type PathTable struct {
 	Records      []*PathTableRecord

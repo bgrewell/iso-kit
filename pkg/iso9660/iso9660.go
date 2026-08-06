@@ -8,10 +8,12 @@ import (
 	"github.com/bgrewell/iso-kit/pkg/filesystem"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/boot"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/descriptor"
+	"github.com/bgrewell/iso-kit/pkg/iso9660/directory"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/info"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/parser"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/pathtable"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/systemarea"
+	"github.com/bgrewell/iso-kit/pkg/iso9660/tree"
 	"github.com/bgrewell/iso-kit/pkg/logging"
 	"github.com/bgrewell/iso-kit/pkg/option"
 	"github.com/bgrewell/iso-kit/pkg/version"
@@ -142,6 +144,26 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 		Terminator:    term,
 	}
 
+	// Build the mutable directory tree from the parsed entries. It backs
+	// the file APIs (ReadFile/AddFile/RemoveFile) and, once modified,
+	// becomes the source of truth for Save.
+	root := tree.NewRoot()
+	for _, entry := range filesystemEntries {
+		if entry.IsDir {
+			node, err := root.AddDirectory(entry.FullPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build directory tree: %w", err)
+			}
+			node.SetMode(entry.Mode)
+			node.SetModTime(entry.ModTime)
+		} else {
+			_, err := root.AddExistingFile(entry.FullPath, isoReader, entry.Location, entry.Size, entry.Mode, entry.ModTime)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build directory tree: %w", err)
+			}
+		}
+	}
+
 	iso := &ISO9660{
 		isoReader:           isoReader,
 		openOptions:         openOptions, //TODO: Work on making composite options that limit users ability to create based on context but have a single set behind the scenes
@@ -149,6 +171,7 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 		volumeDescriptorSet: volumeDescSet,
 		pathTables:          tables,
 		filesystemEntries:   filesystemEntries,
+		root:                root,
 		elTorito:            et,
 		logger:              openOptions.Logger,
 		isPacked:            true,
@@ -157,110 +180,81 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 	return iso, nil
 }
 
+// Create builds a new, empty ISO9660 filesystem in memory. Files and
+// directories are added with AddFile, AddDirectory, and AddLocalDirectory;
+// Save then lays out and writes the complete image.
 func Create(name string, opts ...option.CreateOption) (*ISO9660, error) {
 	// Set default create options
 	createOptions := &option.CreateOptions{
 		Preparer: fmt.Sprintf("iso-kit %s %s (%s) %s", version.Version(), version.Revision(), version.Branch(), version.Date()),
+		Logger:   logging.DefaultLogger(),
 	}
 
 	for _, opt := range opts {
 		opt(createOptions)
 	}
+	if createOptions.Logger == nil {
+		createOptions.Logger = logging.DefaultLogger()
+	}
 
-	//// Create a root directory record
-	//rootDir := &directory.DirectoryRecord{
-	//	FileIdentifier:                "\x00",
-	//	LengthOfDirectoryRecord:       0,
-	//	ExtendedAttributeRecordLength: 0,
-	//	LocationOfExtent:              0, // Updated when writing directory structures
-	//	DataLength:                    0,
-	//	RecordingDateAndTime:          time.Now(),
-	//	FileFlags:                     directory.FileFlags{Directory: true},
-	//	VolumeSequenceNumber:          1, // Volume sequence should be set
-	//}
+	now := time.Now()
+	root := tree.NewRoot()
 
-	//// 1: Create system area (First 16 sectors reserved, boot record might go here)
-	//sa := systemarea.SystemArea{}
-	//
-	//// 2: Create volume descriptor set
-	//pvd := descriptor.PrimaryVolumeDescriptor{
-	//	VolumeDescriptorHeader: descriptor.VolumeDescriptorHeader{
-	//		VolumeDescriptorType:    descriptor.TYPE_PRIMARY_DESCRIPTOR,
-	//		StandardIdentifier:      consts.ISO9660_STD_IDENTIFIER,
-	//		VolumeDescriptorVersion: consts.ISO9660_VOLUME_DESC_VERSION,
-	//	},
-	//	PrimaryVolumeDescriptorBody: descriptor.PrimaryVolumeDescriptorBody{
-	//		SystemIdentifier:              "",
-	//		VolumeIdentifier:              name,
-	//		VolumeSpaceSize:               0, // Set later
-	//		VolumeSetSize:                 1, // Single volume
-	//		VolumeSequenceNumber:          1,
-	//		LogicalBlockSize:              consts.ISO9660_SECTOR_SIZE,
-	//		RootDirectoryRecord:           rootDir,
-	//		VolumeSetIdentifier:           "",
-	//		PublisherIdentifier:           "",
-	//		DataPreparerIdentifier:        createOptions.Preparer,
-	//		ApplicationIdentifier:         "",
-	//		VolumeCreationDateAndTime:     time.Now(),
-	//		VolumeModificationDateAndTime: time.Now(),
-	//		VolumeExpirationDateAndTime:   time.Now(),
-	//		VolumeEffectiveDateAndTime:    time.Now(),
-	//		FileStructureVersion:          1,
-	//	},
-	//}
-	//
-	//// 2.2: Create supplementary volume descriptor (if Joliet is enabled)
-	//var svds []*descriptor.SupplementaryVolumeDescriptor
-	//if createOptions.JolietEnabled {
-	//	svd := descriptor.SupplementaryVolumeDescriptor{
-	//		VolumeDescriptorHeader: descriptor.VolumeDescriptorHeader{
-	//			VolumeDescriptorType:    descriptor.TYPE_SUPPLEMENTARY_DESCRIPTOR,
-	//			StandardIdentifier:      consts.ISO9660_STD_IDENTIFIER,
-	//			VolumeDescriptorVersion: consts.ISO9660_VOLUME_DESC_VERSION,
-	//		},
-	//		SupplementaryVolumeDescriptorBody: descriptor.SupplementaryVolumeDescriptorBody{
-	//			VolumeFlags:                   0,
-	//			SystemIdentifier:              "",
-	//			VolumeIdentifier:              name,
-	//			VolumeSpaceSize:               [8]byte{}, // Needs to be set later
-	//			RootDirectoryRecord:           rootDir,
-	//			VolumeSetIdentifier:           "",
-	//			PublisherIdentifier:           "",
-	//			DataPreparerIdentifier:        createOptions.Preparer,
-	//			ApplicationIdentifier:         "",
-	//			VolumeCreationDateAndTime:     time.Now(),
-	//			VolumeModificationDateAndTime: time.Now(),
-	//			VolumeExpirationDateAndTime:   time.Now(),
-	//			VolumeEffectiveDateAndTime:    time.Now(),
-	//			FileStructureVersion:          1,
-	//		},
-	//	}
-	//	// Copy the Joliet escape sequence (%/@ for Level 3)
-	//	copy(svd.SupplementaryVolumeDescriptorBody.EscapeSequences[:], []byte(consts.JOLIET_LEVEL_3_ESCAPE))
-	//	svds = append(svds, &svd)
-	//}
+	// The root directory record is a placeholder here; Pack replaces it
+	// with one carrying the assigned extent location and size.
+	rootRecord := &directory.DirectoryRecord{
+		LocationOfExtent:       0,
+		DataLength:             0,
+		RecordingDateAndTime:   now,
+		FileFlags:              directory.FileFlags{Directory: true},
+		VolumeSequenceNumber:   1,
+		LengthOfFileIdentifier: 1,
+		FileIdentifier:         "\x00",
+	}
 
-	// 2.3: Create volume partition descriptor(s) (not used often in basic ISO9660)
-	//var pvds []*descriptor.VolumePartitionDescriptor
-	//
-	//// 2.4: Create boot record (only needed for bootable ISOs)
-	//br := descriptor.BootRecordDescriptor{}
+	pvd := &descriptor.PrimaryVolumeDescriptor{
+		VolumeDescriptorHeader: descriptor.VolumeDescriptorHeader{
+			VolumeDescriptorType:    descriptor.TYPE_PRIMARY_DESCRIPTOR,
+			StandardIdentifier:      consts.ISO9660_STD_IDENTIFIER,
+			VolumeDescriptorVersion: consts.ISO9660_VOLUME_DESC_VERSION,
+		},
+		PrimaryVolumeDescriptorBody: descriptor.PrimaryVolumeDescriptorBody{
+			VolumeIdentifier:              name,
+			VolumeSetSize:                 1,
+			VolumeSequenceNumber:          1,
+			LogicalBlockSize:              consts.ISO9660_SECTOR_SIZE,
+			RootDirectoryRecord:           rootRecord,
+			DataPreparerIdentifier:        createOptions.Preparer,
+			VolumeCreationDateAndTime:     now,
+			VolumeModificationDateAndTime: now,
+			FileStructureVersion:          1,
+			Logger:                        createOptions.Logger,
+		},
+	}
 
-	// 3: Initialize path tables (Will need to be generated)
-	// Placeholder for path table setup
-
-	// 4: Create directory records (Root directory will be updated dynamically)
-	// Placeholder for directory handling
-
-	// Build ISO structure
 	iso := &ISO9660{
-		//createOptions: createOptions,
-		//systemArea:    sa,
-		//bootRecord:    &br,
-		//pvd:           &pvd,
-		//svds:          svds,
-		//partitionvds:  pvds,
-		//logger:        createOptions.Logger,
+		createOptions: createOptions,
+		systemArea: systemarea.SystemArea{
+			ObjectSize: consts.ISO9660_SECTOR_SIZE * consts.ISO9660_SYSTEM_AREA_SECTORS,
+		},
+		volumeDescriptorSet: &descriptor.VolumeDescriptorSet{
+			Primary:    pvd,
+			Terminator: descriptor.NewVolumeDescriptorSetTerminator(),
+		},
+		root:     root,
+		logger:   createOptions.Logger,
+		isDirty:  true,
+		isPacked: false,
+	}
+
+	if createOptions.JolietEnabled {
+		iso.logger.Info("WARNING: Joliet output is not yet supported; the image will be written without a supplementary volume descriptor")
+	}
+
+	if createOptions.RootDir != "" {
+		if err := iso.AddLocalDirectory(createOptions.RootDir, "/"); err != nil {
+			return nil, err
+		}
 	}
 
 	return iso, nil
@@ -284,10 +278,18 @@ type ISO9660 struct {
 	elTorito *boot.ElTorito
 	// FileSystemEntries
 	filesystemEntries []*filesystem.FileSystemEntry
+	// Mutable directory tree; the source of truth for filesystem state
+	root *tree.Node
+	// Sector assignments produced by Pack
+	layout *packLayout
 	// Logger
 	logger *logging.Logger
 	// isPacked represents if the ISO9660 filesystem is packed and ready to write to disk
 	isPacked bool
+	// isDirty is set when the tree has been modified since Open/Create,
+	// meaning Save must rebuild the image layout rather than re-serialize
+	// parsed structures at their original offsets
+	isDirty bool
 }
 
 func (iso *ISO9660) preferJoliet() bool {
@@ -532,8 +534,52 @@ func (iso *ISO9660) ListBootEntries() ([]*filesystem.FileSystemEntry, error) {
 	return iso.elTorito.BuildBootImageEntries()
 }
 
+// refreshEntriesFromTree rebuilds the flat entry list from the mutable
+// tree when the cached parse-time list has been invalidated by a
+// modification. Entries built this way have Location 0 with a reader whose
+// offset 0 is the start of the file, and carry no directory record.
+func (iso *ISO9660) refreshEntriesFromTree() error {
+	if iso.filesystemEntries != nil || iso.root == nil {
+		return nil
+	}
+	entries := make([]*filesystem.FileSystemEntry, 0)
+	err := iso.root.Walk(func(node *tree.Node) error {
+		var reader io.ReaderAt
+		if !node.IsDir() {
+			r, err := node.ContentReaderAt(consts.ISO9660_SECTOR_SIZE)
+			if err != nil {
+				return err
+			}
+			reader = r
+		}
+		entries = append(entries, filesystem.NewFileSystemEntry(
+			node.Name(),
+			node.FullPath(),
+			node.IsDir(),
+			node.Size(),
+			0,
+			nil,
+			nil,
+			node.Mode(),
+			node.ModTime(),
+			node.ModTime(),
+			nil,
+			reader,
+		))
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	iso.filesystemEntries = entries
+	return nil
+}
+
 // ListFiles returns a list of all files in the ISO9660 filesystem.
 func (iso *ISO9660) ListFiles() ([]*filesystem.FileSystemEntry, error) {
+	if err := iso.refreshEntriesFromTree(); err != nil {
+		return nil, err
+	}
 	files := make([]*filesystem.FileSystemEntry, 0)
 	for _, entry := range iso.filesystemEntries {
 		if !entry.IsDir {
@@ -546,6 +592,9 @@ func (iso *ISO9660) ListFiles() ([]*filesystem.FileSystemEntry, error) {
 
 // ListDirectories returns a list of all directories in the ISO9660 filesystem.
 func (iso *ISO9660) ListDirectories() ([]*filesystem.FileSystemEntry, error) {
+	if err := iso.refreshEntriesFromTree(); err != nil {
+		return nil, err
+	}
 	dirs := make([]*filesystem.FileSystemEntry, 0)
 	for _, entry := range iso.filesystemEntries {
 		if entry.IsDir {
@@ -556,19 +605,149 @@ func (iso *ISO9660) ListDirectories() ([]*filesystem.FileSystemEntry, error) {
 	return dirs, nil
 }
 
+// ReadFile returns the content of the file at the given path. The path is
+// slash-separated relative to the image root; an ISO 9660 version suffix
+// (";1") on the final component is optional.
 func (iso *ISO9660) ReadFile(path string) ([]byte, error) {
-	//TODO implement me
-	panic("implement me")
+	if iso.root == nil {
+		return nil, errors.New("no filesystem is loaded")
+	}
+	node := iso.root.Lookup(path)
+	if node == nil {
+		return nil, fmt.Errorf("file not found: %s", path)
+	}
+	if node.IsDir() {
+		return nil, fmt.Errorf("path is a directory: %s", path)
+	}
+	return node.ReadData(consts.ISO9660_SECTOR_SIZE)
 }
 
+// AddFile adds a file with the given content at the given path, creating
+// parent directories as needed. An existing file at the path is replaced.
 func (iso *ISO9660) AddFile(path string, data []byte) error {
-	//TODO implement me
-	panic("implement me")
+	if iso.root == nil {
+		return errors.New("no filesystem is loaded")
+	}
+	if _, err := iso.root.AddFile(path, data); err != nil {
+		return err
+	}
+	iso.markDirty()
+	return nil
 }
 
+// AddDirectory creates an empty directory at the given path, creating
+// parent directories as needed.
+func (iso *ISO9660) AddDirectory(path string) error {
+	if iso.root == nil {
+		return errors.New("no filesystem is loaded")
+	}
+	if _, err := iso.root.AddDirectory(path); err != nil {
+		return err
+	}
+	iso.markDirty()
+	return nil
+}
+
+// AddLocalDirectory recursively imports a directory from the local
+// filesystem into the image at targetPath. File content is read into
+// memory at Save time via the pending-data mechanism; large trees are read
+// eagerly here, so callers importing very large directories should expect
+// proportional memory use until streaming import support lands.
+func (iso *ISO9660) AddLocalDirectory(sourcePath, targetPath string) error {
+	if iso.root == nil {
+		return errors.New("no filesystem is loaded")
+	}
+	sourcePath = filepath.Clean(sourcePath)
+	err := filepath.Walk(sourcePath, func(path string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(sourcePath, path)
+		if err != nil {
+			return err
+		}
+		isoPath := targetPath
+		if rel != "." {
+			isoPath = strings.TrimSuffix(targetPath, "/") + "/" + filepath.ToSlash(rel)
+		}
+		if fi.IsDir() {
+			node, err := iso.root.AddDirectory(isoPath)
+			if err != nil {
+				return err
+			}
+			node.SetMode(fi.Mode().Perm())
+			node.SetModTime(fi.ModTime())
+			return nil
+		}
+		if !fi.Mode().IsRegular() {
+			iso.logger.Info("Skipping non-regular file", "path", path)
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read %s: %w", path, err)
+		}
+		node, err := iso.root.AddFile(isoPath, data)
+		if err != nil {
+			return err
+		}
+		node.SetMode(fi.Mode().Perm())
+		node.SetModTime(fi.ModTime())
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	iso.markDirty()
+	return nil
+}
+
+// RemoveFile removes the file at the given path. Removing a directory is
+// an error; use RemoveDirectory instead.
 func (iso *ISO9660) RemoveFile(path string) error {
-	//TODO implement me
-	panic("implement me")
+	if iso.root == nil {
+		return errors.New("no filesystem is loaded")
+	}
+	node := iso.root.Lookup(path)
+	if node == nil {
+		return fmt.Errorf("file not found: %s", path)
+	}
+	if node.IsDir() {
+		return fmt.Errorf("path is a directory (use RemoveDirectory): %s", path)
+	}
+	if err := iso.root.Remove(path); err != nil {
+		return err
+	}
+	iso.markDirty()
+	return nil
+}
+
+// RemoveDirectory removes the directory at the given path along with its
+// entire subtree.
+func (iso *ISO9660) RemoveDirectory(path string) error {
+	if iso.root == nil {
+		return errors.New("no filesystem is loaded")
+	}
+	node := iso.root.Lookup(path)
+	if node == nil {
+		return fmt.Errorf("directory not found: %s", path)
+	}
+	if !node.IsDir() {
+		return fmt.Errorf("path is a file (use RemoveFile): %s", path)
+	}
+	if err := iso.root.Remove(path); err != nil {
+		return err
+	}
+	iso.markDirty()
+	return nil
+}
+
+// markDirty records that the tree has diverged from the parsed image, so
+// Save must rebuild the layout, and invalidates the flat entry cache.
+func (iso *ISO9660) markDirty() {
+	iso.isDirty = true
+	iso.isPacked = false
+	iso.filesystemEntries = nil
 }
 
 // CreateDirectories creates all directories from the ISO in the specified path.
@@ -748,14 +927,17 @@ func (iso *ISO9660) GetObjects() []info.ImageObject {
 	return objects
 }
 
+// Save writes the complete image to the writer. An image opened from disk
+// and never modified is re-serialized at its original offsets; a created
+// or modified image is packed (sector layout assigned) and rebuilt from
+// the directory tree.
 func (iso *ISO9660) Save(writer io.WriterAt) error {
-	// Ensure the ISO is packed and all objects have been assigned locations
-	if !iso.isPacked {
-		// TODO: Make packing automatic
-		return errors.New("iso is not packed, cannot save")
+	if iso.isDirty || iso.isoReader == nil {
+		return iso.saveRebuild(writer)
 	}
 
-	// Get all objects
+	// Pristine passthrough: re-serialize parsed structures at their
+	// original byte offsets.
 	objects := iso.GetObjects()
 
 	// Sort objects by offset before writing
@@ -778,6 +960,122 @@ func (iso *ISO9660) Save(writer io.WriterAt) error {
 		}
 	}
 
+	return nil
+}
+
+// saveRebuild lays out and writes a complete image from the directory
+// tree: system area, volume descriptors, path tables, directory extents,
+// and file extents. Every allocated sector is written in full, so the
+// resulting image is exactly VolumeSpaceSize sectors long.
+func (iso *ISO9660) saveRebuild(writer io.WriterAt) error {
+	if iso.root == nil {
+		return errors.New("no filesystem is loaded")
+	}
+
+	if iso.volumeDescriptorSet.Boot != nil || iso.elTorito != nil {
+		iso.logger.Info("WARNING: El Torito boot structures are not yet supported in rebuilt images; the output will not be bootable")
+	}
+	if len(iso.volumeDescriptorSet.Supplementary) > 0 {
+		iso.logger.Info("WARNING: Joliet output is not yet supported; the supplementary volume descriptor is dropped from the rebuilt image")
+	}
+
+	if err := iso.Pack(); err != nil {
+		return fmt.Errorf("failed to pack image: %w", err)
+	}
+
+	// 1. System area (sectors 0-15).
+	if _, err := writer.WriteAt(iso.systemArea.Contents[:], 0); err != nil {
+		return fmt.Errorf("failed to write system area: %w", err)
+	}
+
+	// 2. Primary volume descriptor.
+	pvdBytes, err := iso.volumeDescriptorSet.Primary.Marshal()
+	if err != nil {
+		return fmt.Errorf("failed to marshal primary volume descriptor: %w", err)
+	}
+	if _, err := writer.WriteAt(pvdBytes, int64(iso.layout.pvdSector)*consts.ISO9660_SECTOR_SIZE); err != nil {
+		return fmt.Errorf("failed to write primary volume descriptor: %w", err)
+	}
+
+	// 3. Volume descriptor set terminator.
+	term := iso.volumeDescriptorSet.Terminator
+	if term == nil {
+		term = descriptor.NewVolumeDescriptorSetTerminator()
+		iso.volumeDescriptorSet.Terminator = term
+	}
+	term.ObjectLocation = int64(iso.layout.terminatorSector) * consts.ISO9660_SECTOR_SIZE
+	term.VolumeDescriptorSetTerminatorBody.ObjectSize = consts.ISO9660_SECTOR_SIZE
+	termBytes, err := term.Marshal()
+	if err != nil {
+		return fmt.Errorf("failed to marshal volume descriptor set terminator: %w", err)
+	}
+	if _, err := writer.WriteAt(termBytes, term.ObjectLocation); err != nil {
+		return fmt.Errorf("failed to write volume descriptor set terminator: %w", err)
+	}
+
+	// 4. Path tables (L then M), zero-padded to whole sectors.
+	ptL, ptM, err := iso.buildPathTables()
+	if err != nil {
+		return err
+	}
+	for _, pt := range []*pathtable.PathTable{ptL, ptM} {
+		data, err := pt.Marshal()
+		if err != nil {
+			return fmt.Errorf("failed to marshal path table: %w", err)
+		}
+		padded := make([]byte, sectorsFor(uint32(len(data)))*consts.ISO9660_SECTOR_SIZE)
+		copy(padded, data)
+		if _, err := writer.WriteAt(padded, pt.Offset()); err != nil {
+			return fmt.Errorf("failed to write path table: %w", err)
+		}
+	}
+	iso.pathTables = []*pathtable.PathTable{ptL, ptM}
+
+	// 5. Directory extents in breadth-first order.
+	for _, dir := range iso.layout.dirs {
+		data, err := marshalDirectoryExtent(dir)
+		if err != nil {
+			return err
+		}
+		if _, err := writer.WriteAt(data, int64(dir.PackedLocation)*consts.ISO9660_SECTOR_SIZE); err != nil {
+			return fmt.Errorf("failed to write directory extent for %q: %w", dir.FullPath(), err)
+		}
+	}
+
+	// 6. File extents, each zero-padded to whole sectors.
+	for _, file := range iso.layout.files {
+		if err := iso.writeFileExtent(writer, file); err != nil {
+			return err
+		}
+	}
+
+	iso.isDirty = false
+	return nil
+}
+
+// writeFileExtent streams a file's content to its packed location and
+// zero-fills the remainder of its final sector.
+func (iso *ISO9660) writeFileExtent(writer io.WriterAt, node *tree.Node) error {
+	if node.Size() == 0 {
+		return nil
+	}
+	content, err := node.Content(consts.ISO9660_SECTOR_SIZE)
+	if err != nil {
+		return err
+	}
+	targetOffset := int64(node.PackedLocation) * consts.ISO9660_SECTOR_SIZE
+	written, err := io.Copy(io.NewOffsetWriter(writer, targetOffset), content)
+	if err != nil {
+		return fmt.Errorf("failed to write content of %q: %w", node.FullPath(), err)
+	}
+	if written != int64(node.Size()) {
+		return fmt.Errorf("short write for %q: wrote %d of %d bytes", node.FullPath(), written, node.Size())
+	}
+	if pad := int64(sectorsFor(node.Size()))*consts.ISO9660_SECTOR_SIZE - written; pad > 0 {
+		if _, err := writer.WriteAt(make([]byte, pad), targetOffset+written); err != nil {
+			return fmt.Errorf("failed to pad extent of %q: %w", node.FullPath(), err)
+		}
+	}
 	return nil
 }
 
