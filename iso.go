@@ -82,24 +82,20 @@ func Open(filename string, opts ...option.OpenOption) (ISO, error) {
 		return nil, err
 	}
 
-	// Detect ISO9660
+	// Detect ISO9660. Bridge discs carry both an ISO 9660 descriptor and
+	// a UDF recognition sequence; the richer ISO 9660 implementation is
+	// preferred for those.
 	if string(header[1:6]) == consts.ISO9660_STD_IDENTIFIER {
 		return iso9660.Open(f, opts...)
 	}
 
-	// Check if file is large enough to be a valid UDF ISO
-	if fileInfo.Size() < 256*consts.UDF_SECTOR_SIZE {
-		f.Close()
-		return nil, errors.New("file is too small to be a valid ISO9660 or UDF ISO")
+	// Detect UDF by scanning the Volume Recognition Sequence (sectors
+	// 16+) for an NSR descriptor.
+	if udf.IsUDF(f) {
+		return udf.Open(f, opts...)
 	}
 
-	// Read UDF anchor volume descriptor at sector 256 (offset 524288)
-	if _, err = f.ReadAt(header[:], 256*consts.UDF_SECTOR_SIZE); err == nil {
-		if string(header[1:5]) == consts.UDF_STD_IDENTIFIER {
-			return udf.Open(f, opts...)
-		}
-	}
-
+	f.Close()
 	return nil, errors.New("unsupported ISO format")
 }
 
