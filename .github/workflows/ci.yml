@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # xorriso, fdisk, and parted power the interoperability tests
+      # (Rock Ridge / Joliet / El Torito / hybrid partition verification).
+      # Tests skip gracefully when tools are missing, so this step failing
+      # soft would silently reduce coverage; keep it required.
+      - name: Install interop tools
+        run: sudo apt-get update && sudo apt-get install -y xorriso fdisk parted genisoimage
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l ./pkg ./cmd)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt required for:" && echo "$unformatted" && exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+      - name: Coverage
+        run: go test -count=1 -coverprofile=coverage.out -coverpkg=./... ./... && go tool cover -func=coverage.out | tail -1

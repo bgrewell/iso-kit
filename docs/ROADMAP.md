@@ -201,9 +201,13 @@ Goal: UDF support, USB-bootable hybrid ISOs, production CLI, comprehensive testi
     GPT mode writes a protective MBR + GPT with the EFI System Partition
     and a backup GPT appended after the ISO data
   - Verified with fdisk and parted: GPT disklabel and ESP recognized
-- [ ] Rebuild `isocreate` CLI with proper argument parsing
+- [x] Rebuild `isocreate` CLI with proper argument parsing
+  - Volume/preparer identity, Rock Ridge/Joliet/interchange-level toggles,
+    BIOS + EFI boot entries, isohybrid MBR/GPT flags
 - [ ] Comprehensive unit tests (directory, parser, pathtable, extensions, eltorito)
-- [ ] CI pipeline (GitHub Actions) + README update
+- [x] CI pipeline (GitHub Actions) + README update
+  - Build, vet, gofmt gate, race-enabled tests with xorriso/fdisk/parted
+    installed so interop tests run, coverage summary
 - [ ] Split `VolumeDescriptor` interface into base + filesystem-aware sub-interface
 
 ## Architectural Concerns
