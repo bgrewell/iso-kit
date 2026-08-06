@@ -358,7 +358,25 @@ func (p *Parser) BuildFileSystemEntries(rootDir *directory.DirectoryRecord, Rock
 			return err
 		}
 
+		// Multi-extent files (Level 3, >4 GiB) are recorded as consecutive
+		// directory records: every record but the last carries the
+		// MultiExtent flag. Accumulate them and emit one merged entry.
+		var pendingExtents []filesystem.ExtentSegment
+
 		for _, record := range dirRecords {
+			// Filter out root and parent entries
+			if len(record.FileIdentifier) == 0 || record.FileIdentifier[0] == 0x00 || record.FileIdentifier[0] == 0x01 {
+				continue
+			}
+
+			if record.FileFlags.MultiExtent {
+				pendingExtents = append(pendingExtents, filesystem.ExtentSegment{
+					Location: record.LocationOfExtent,
+					Size:     record.DataLength,
+				})
+				continue
+			}
+
 			// Build full path
 			fullPath := parentPath + "/" + record.GetBestName(RockRidgeEnabled)
 
@@ -367,27 +385,44 @@ func (p *Parser) BuildFileSystemEntries(rootDir *directory.DirectoryRecord, Rock
 			uid, gid := record.GetOwnership(RockRidgeEnabled)
 			creationTime, modificationTime := record.GetTimestamps(RockRidgeEnabled)
 
+			size := uint64(record.DataLength)
+			location := record.LocationOfExtent
+			reader := io.ReaderAt(p.reader)
+			var segments []filesystem.ExtentSegment
+			if len(pendingExtents) > 0 {
+				// This record closes a multi-extent file: assemble all
+				// accumulated segments plus this final one.
+				segments = append(pendingExtents, filesystem.ExtentSegment{
+					Location: record.LocationOfExtent,
+					Size:     record.DataLength,
+				})
+				pendingExtents = nil
+				multi := filesystem.NewMultiExtentReader(p.reader, consts.ISO9660_SECTOR_SIZE, segments)
+				size = uint64(multi.TotalSize())
+				location = 0
+				reader = multi
+			}
+
 			// Create FileSystemEntry
 			entry := filesystem.NewFileSystemEntry(
 				record.GetBestName(RockRidgeEnabled),
 				fullPath,
 				record.IsDirectory(),
-				record.DataLength,
-				record.LocationOfExtent,
+				size,
+				location,
 				uid,
 				gid,
 				permissions,
 				creationTime,
 				modificationTime,
 				record,
-				p.reader,
+				reader,
 			)
-			p.logger.Trace("Created FileSystemEntry", "path", fullPath, "location", record.LocationOfExtent)
-
-			// Filter out root and parent entries4
-			if len(record.FileIdentifier) == 0 || record.FileIdentifier[0] == 0x00 || record.FileIdentifier[0] == 0x01 {
-				continue
+			entry.Segments = segments
+			if record.RockRidge != nil && record.RockRidge.SymlinkTarget != nil {
+				entry.SymlinkTarget = *record.RockRidge.SymlinkTarget
 			}
+			p.logger.Trace("Created FileSystemEntry", "path", fullPath, "location", record.LocationOfExtent)
 
 			entries = append(entries, entry)
 

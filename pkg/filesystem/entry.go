@@ -14,7 +14,7 @@ import (
 )
 
 // NewFileSystemEntry initializes a FileSystemEntry with a reader
-func NewFileSystemEntry(name, fullPath string, isDir bool, size, location uint32, uid *uint32, gid *uint32, mode os.FileMode, createTime, modTime time.Time, record *directory.DirectoryRecord, reader io.ReaderAt) *FileSystemEntry {
+func NewFileSystemEntry(name, fullPath string, isDir bool, size uint64, location uint32, uid *uint32, gid *uint32, mode os.FileMode, createTime, modTime time.Time, record *directory.DirectoryRecord, reader io.ReaderAt) *FileSystemEntry {
 	return &FileSystemEntry{
 		Name:       name,
 		FullPath:   fullPath,
@@ -38,9 +38,11 @@ type FileSystemEntry struct {
 	FullPath string `json:"full_path"`
 	// IsDir, true if it's a directory
 	IsDir bool `json:"is_dir"`
-	// Size of the file, 0 if it's a directory
-	Size uint32 `json:"size"`
-	// Location of the file in the iso
+	// Size of the file, 0 if it's a directory. Multi-extent files exceed
+	// the 32-bit range of a single directory record.
+	Size uint64 `json:"size"`
+	// Location of the file in the iso. Zero for multi-extent files, whose
+	// reader maps offset 0 to the start of the assembled content.
 	Location uint32 `json:"location"`
 	// UID, userid of the file/directory
 	UID *uint32 `json:"uid"`
@@ -54,6 +56,12 @@ type FileSystemEntry struct {
 	ModTime time.Time
 	// RockRidge extended attributes
 	HasRockRidge bool `json:"has_rock_ridge"`
+	// SymlinkTarget is the Rock Ridge symbolic link target, empty for
+	// regular files and directories.
+	SymlinkTarget string `json:"symlink_target,omitempty"`
+	// Segments lists the extents of a multi-extent file in order. Nil for
+	// ordinary single-extent files.
+	Segments []ExtentSegment `json:"segments,omitempty"`
 	// Original DirectoryRecord
 	record *directory.DirectoryRecord
 	// A reference to the io.ReaderAt so that we can extract the file contents easily
@@ -63,6 +71,17 @@ type FileSystemEntry struct {
 // DirectoryRecord returns the original directory record for the entry
 func (fse *FileSystemEntry) DirectoryRecord() *directory.DirectoryRecord {
 	return fse.record
+}
+
+// ContentReader returns the entry's backing reader. For multi-extent
+// files this reader maps offset 0 to the start of the assembled content.
+func (fse *FileSystemEntry) ContentReader() io.ReaderAt {
+	return fse.reader
+}
+
+// IsSymlink reports whether the entry is a Rock Ridge symbolic link.
+func (fse *FileSystemEntry) IsSymlink() bool {
+	return fse.SymlinkTarget != ""
 }
 
 // ReadAt is a wrapper that allows the FileSystemEntry to be used as an io.ReaderAt

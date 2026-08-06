@@ -151,7 +151,6 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 	root := tree.NewRoot()
 	for _, entry := range filesystemEntries {
 		var node *tree.Node
-		record := entry.DirectoryRecord()
 		switch {
 		case entry.IsDir:
 			node, err = root.AddDirectory(entry.FullPath)
@@ -159,11 +158,15 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 				node.SetMode(entry.Mode)
 				node.SetModTime(entry.ModTime)
 			}
-		case record != nil && record.RockRidge != nil && record.RockRidge.SymlinkTarget != nil:
-			node, err = root.AddSymlink(entry.FullPath, *record.RockRidge.SymlinkTarget)
+		case entry.IsSymlink():
+			node, err = root.AddSymlink(entry.FullPath, entry.SymlinkTarget)
 			if err == nil {
 				node.SetModTime(entry.ModTime)
 			}
+		case len(entry.Segments) > 0:
+			// Multi-extent file: the entry's reader maps offset 0 to the
+			// start of the assembled content.
+			node, err = root.AddExistingFile(entry.FullPath, entry.ContentReader(), 0, entry.Size, entry.Mode, entry.ModTime)
 		default:
 			node, err = root.AddExistingFile(entry.FullPath, isoReader, entry.Location, entry.Size, entry.Mode, entry.ModTime)
 		}
@@ -560,7 +563,7 @@ func (iso *ISO9660) refreshEntriesFromTree() error {
 			}
 			reader = r
 		}
-		entries = append(entries, filesystem.NewFileSystemEntry(
+		entry := filesystem.NewFileSystemEntry(
 			node.Name(),
 			node.FullPath(),
 			node.IsDir(),
@@ -573,7 +576,9 @@ func (iso *ISO9660) refreshEntriesFromTree() error {
 			node.ModTime(),
 			nil,
 			reader,
-		))
+		)
+		entry.SymlinkTarget = node.SymlinkTarget()
+		entries = append(entries, entry)
 		return nil
 	})
 	if err != nil {
@@ -854,7 +859,7 @@ func (iso *ISO9660) Extract(path string) error {
 	}
 
 	// Extract El Torito boot images if enabled
-	if iso.elTorito != nil && iso.openOptions.ElToritoEnabled {
+	if iso.elTorito != nil && iso.openOptions != nil && iso.openOptions.ElToritoEnabled {
 		err := iso.elTorito.ExtractBootImages(iso.isoReader, filepath.Join(path, iso.openOptions.BootFileExtractLocation))
 		if err != nil {
 			return fmt.Errorf("failed to extract El Torito boot images: %w", err)
@@ -879,8 +884,20 @@ func (iso *ISO9660) Extract(path string) error {
 		}
 
 		// if the option to strip version info is enabled, enhanced and rr are not enabled then strip the version info
-		if iso.openOptions.StripVersionInfo && !iso.openOptions.RockRidgeEnabled && !iso.openOptions.PreferJoliet {
+		if iso.openOptions != nil && iso.openOptions.StripVersionInfo && !iso.openOptions.RockRidgeEnabled && !iso.openOptions.PreferJoliet {
 			outputPath = strings.TrimSuffix(outputPath, ";1")
+		}
+
+		// Rock Ridge symbolic links materialize as symlinks, not files.
+		if entry.IsSymlink() {
+			// Replace any stale target from a previous extraction.
+			if err := os.Remove(outputPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("failed to replace existing path %s: %w", outputPath, err)
+			}
+			if err := os.Symlink(entry.SymlinkTarget, outputPath); err != nil {
+				return fmt.Errorf("failed to create symlink %s -> %s: %w", outputPath, entry.SymlinkTarget, err)
+			}
+			continue
 		}
 
 		if err := iso.extractFile(entry, outputPath, i+1, totalFiles); err != nil {
@@ -1267,7 +1284,7 @@ func (iso *ISO9660) writeFileExtent(writer io.WriterAt, node *tree.Node) error {
 	if written != int64(node.Size()) {
 		return fmt.Errorf("short write for %q: wrote %d of %d bytes", node.FullPath(), written, node.Size())
 	}
-	if pad := int64(sectorsFor(node.Size()))*consts.ISO9660_SECTOR_SIZE - written; pad > 0 {
+	if pad := int64(sectorsFor(uint32(node.Size())))*consts.ISO9660_SECTOR_SIZE - written; pad > 0 {
 		if _, err := writer.WriteAt(make([]byte, pad), targetOffset+written); err != nil {
 			return fmt.Errorf("failed to pad extent of %q: %w", node.FullPath(), err)
 		}

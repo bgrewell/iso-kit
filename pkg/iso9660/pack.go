@@ -26,6 +26,10 @@ const (
 
 	// On-disk size of a SUSP "CE" continuation pointer entry.
 	ceEntrySize = 28
+
+	// Largest file writable as a single extent: the directory record's
+	// data length field is 32 bits.
+	maxSingleExtentSize = uint64(0xFFFFFFFF)
 )
 
 // directoryRecordBaseLength returns the length of a directory record for
@@ -233,6 +237,15 @@ func (l *packLayout) jolietRef(node *tree.Node) (uint32, uint32) {
 	return node.PackedLocation, node.PackedSize
 }
 
+// interchangeLevel returns the ISO 9660 interchange level to enforce
+// when packing; zero (relaxed) unless set via WithInterchangeLevel.
+func (iso *ISO9660) interchangeLevel() int {
+	if iso.createOptions != nil {
+		return iso.createOptions.InterchangeLevel
+	}
+	return 0
+}
+
 // rockRidgeWriteEnabled reports whether the rebuilt image should carry
 // Rock Ridge extensions: created images follow the create option
 // (default on); opened images preserve Rock Ridge when the source had it
@@ -306,7 +319,7 @@ func rrChildEntries(node *tree.Node) ([][]byte, error) {
 // buildPlans computes identifiers and system use layouts for every record
 // in every directory extent. Location-independent: entry contents that
 // need locations (CE) are sized here and filled in after assignment.
-func buildPlans(dirs []*tree.Node, rockRidge bool) (map[*tree.Node]*dirPlan, map[*tree.Node]string, error) {
+func buildPlans(dirs []*tree.Node, rockRidge bool, level int) (map[*tree.Node]*dirPlan, map[*tree.Node]string, error) {
 	plans := make(map[*tree.Node]*dirPlan, len(dirs))
 	identifiers := make(map[*tree.Node]string)
 
@@ -354,7 +367,10 @@ func buildPlans(dirs []*tree.Node, rockRidge bool) (map[*tree.Node]*dirPlan, map
 		}
 
 		children := dir.Children()
-		ids := assignIdentifiers(children, rockRidge)
+		ids, err := assignIdentifiers(children, rockRidge, level)
+		if err != nil {
+			return nil, nil, err
+		}
 		for _, child := range children {
 			id := ids[child]
 			identifiers[child] = id
@@ -562,7 +578,7 @@ func (iso *ISO9660) Pack() error {
 	joliet := iso.jolietWriteEnabled()
 	elTorito := iso.elTorito != nil && len(iso.elTorito.Entries) > 0
 	dirs := iso.root.Directories()
-	plans, identifiers, err := buildPlans(dirs, rockRidge)
+	plans, identifiers, err := buildPlans(dirs, rockRidge, iso.interchangeLevel())
 	if err != nil {
 		return err
 	}
@@ -643,9 +659,15 @@ func (iso *ISO9660) Pack() error {
 		if node.IsDir() || node.IsSymlink() {
 			return nil
 		}
+		// A single directory record's data length is 32-bit; larger files
+		// need multi-extent write support, which is not yet implemented.
+		if node.Size() > maxSingleExtentSize {
+			return fmt.Errorf("file %q is %d bytes; files larger than %d bytes require multi-extent write support (not yet implemented)",
+				node.FullPath(), node.Size(), uint64(maxSingleExtentSize))
+		}
 		node.PackedLocation = next
-		node.PackedSize = node.Size()
-		next += sectorsFor(node.Size())
+		node.PackedSize = uint32(node.Size())
+		next += sectorsFor(uint32(node.Size()))
 		layout.files = append(layout.files, node)
 		return nil
 	})
@@ -674,7 +696,7 @@ func (iso *ISO9660) Pack() error {
 					return fmt.Errorf("boot image %q not found in the image", entry.BootFile)
 				}
 				layout.bootImageNodes[entry] = node
-				entry.SetExtent(node.PackedLocation, node.Size())
+				entry.SetExtent(node.PackedLocation, uint32(node.Size()))
 			case srcIndex[entry.Location()] != nil:
 				node := srcIndex[entry.Location()]
 				// Preserve the parsed sector count; the file may be
@@ -683,7 +705,7 @@ func (iso *ISO9660) Pack() error {
 					entry.LoadSize = entry.SectorCount()
 				}
 				layout.bootImageNodes[entry] = node
-				entry.SetExtent(node.PackedLocation, node.Size())
+				entry.SetExtent(node.PackedLocation, uint32(node.Size()))
 			default:
 				// No tree counterpart (e.g. hidden boot image): copy the
 				// raw extent. Only the loaded portion is known.

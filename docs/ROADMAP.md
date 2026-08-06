@@ -109,8 +109,10 @@ Goal: create and modify ISOs. Largest and most architecturally significant phase
 - [x] Fix Joliet directory record marshal (UCS-2 re-encoding)
   - Identifiers are pre-encoded to UCS-2 in the layout engine's Joliet
     record plans; the record marshal writes them byte-exact
-- [ ] Add `VolumeDescriptorSet` methods (WriteTo, Validate)
-- [ ] Implement `VolumePartitionDescriptor` Marshal/Unmarshal
+- [x] Add `VolumeDescriptorSet.Validate` (structural invariant checks;
+  WriteTo is covered by the Save rebuild path)
+- [x] Implement `VolumePartitionDescriptor` Marshal/Unmarshal
+  - Full ECMA-119 8.6 field encoding with byte-exact round-trip test
 - [x] End-to-end Create→AddFile→Save→Open verification test
   - Round-trip tests plus Open→modify→Save→Open, multi-sector directories,
     empty images, and external-tool interop (isoinfo/xorriso)
@@ -167,13 +169,18 @@ Goal: proper extension support with spec-compliant serialization.
     sector-copy fallback for hidden boot images
   - Also fixed a uint16 overflow in BuildBootImageEntries sizing for boot
     images over 128 KB
-- [ ] Wire character validation into descriptor write path
-- [ ] Implement ISO 9660 filename validation (Level 1/2/3)
-  - Partially covered by the Rock Ridge identifier mangler; strict
-    level-selectable validation still open
-- [ ] Add multi-extent file assembly for reading (Level 3 / >4GB files)
-- [ ] Extract() should materialize Rock Ridge symlinks as symlinks
-  (currently written as empty files on extraction)
+- [x] Wire character validation into descriptor write path
+  - `validation.ValidateFileIdentifier` enforced at pack time when an
+    interchange level is set
+- [x] Implement ISO 9660 filename validation (Level 1/2/3)
+  - `WithInterchangeLevel(1|2|3)`: level 1 mangles to 8.3 with Rock Ridge,
+    or rejects invalid raw identifiers without it; levels 2/3 enforce the
+    31-character budget
+- [x] Add multi-extent file assembly for reading (Level 3 / >4GB files)
+  - Parser merges consecutive MultiExtent records into one entry backed by
+    a segmented reader; entry and tree sizes promoted to uint64; writing
+    >4 GiB files errors clearly (multi-extent write not yet implemented)
+- [x] Extract() materializes Rock Ridge symlinks as symlinks
 
 ## P3: Advanced — UDF, Hybrid ISO, Production Readiness
 

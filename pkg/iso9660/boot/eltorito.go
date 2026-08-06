@@ -467,7 +467,7 @@ func (et *ElTorito) BuildBootImageEntries() ([]*filesystem.FileSystemEntry, erro
 			Name:       filename,
 			FullPath:   "/[BOOT]/" + filename, // Logical path inside the ISO
 			IsDir:      false,
-			Size:       uint32(entry.size) * 512, // Convert 512-byte block size
+			Size:       uint64(entry.size) * 512, // Convert 512-byte block size
 			Location:   entry.location,
 			Mode:       0444,        // Read-only boot image
 			CreateTime: time.Time{}, // No real timestamp in El Torito
