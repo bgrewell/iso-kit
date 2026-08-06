@@ -2,74 +2,13 @@
 
 [![CI](https://github.com/bgrewell/iso-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/bgrewell/iso-kit/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/bgrewell/iso-kit/graph/badge.svg?token=D15C46IECF)](https://codecov.io/gh/bgrewell/iso-kit)
+[![Go Reference](https://pkg.go.dev/badge/github.com/bgrewell/iso-kit.svg)](https://pkg.go.dev/github.com/bgrewell/iso-kit)
 
-**iso-kit** is a Go library for working with ISO 9660 disk images: open existing
-images, modify them, or build new ones from scratch — with Rock Ridge, Joliet,
-El Torito boot, hybrid (USB-bootable) layouts, and read-only UDF support.
+Work with ISO disk images in Go — or straight from the command line.
 
-> **Notice:** The API is pre-1.0 and may still change between releases.
-
-## Features
-
-- **Read**: parse ISO 9660 images including Rock Ridge (POSIX metadata,
-  symlinks), Joliet (Unicode names), El Torito boot catalogs, multi-extent
-  (>4 GiB) files, and path tables. Extract full trees to disk, symlinks
-  included.
-- **Create**: build images from scratch or from a local directory tree.
-  Rock Ridge is written by default; Joliet is opt-in; identifiers can be
-  enforced at ISO 9660 interchange levels 1–3.
-- **Modify**: open an image, add/remove files and directories, and save —
-  existing file content is streamed and relocated, never fully loaded into
-  memory.
-- **Boot**: register BIOS and EFI El Torito boot entries (with isolinux
-  boot-info-table patching), and write hybrid MBR/GPT partition structures so
-  images boot from USB media.
-- **UDF**: read-only support for ECMA-167 / UDF images (listing, reading,
-  extraction).
-
-## Library usage
-
-```go
-import (
-    "os"
-
-    "github.com/bgrewell/iso-kit/pkg/iso9660"
-    "github.com/bgrewell/iso-kit/pkg/option"
-)
-
-// Create an image from scratch.
-img, _ := iso9660.Create("MYVOLUME", option.WithJolietEnabled(true))
-img.AddFile("docs/readme.txt", []byte("hello\n"))
-img.AddLocalDirectory("./payload", "/payload")
-out, _ := os.Create("out.iso")
-img.Save(out)
-
-// Open, modify, save.
-f, _ := os.Open("existing.iso")
-img2, _ := iso9660.Open(f)
-data, _ := img2.ReadFile("some/file.txt")
-img2.AddFile("added.txt", data)
-img2.RemoveFile("obsolete.txt")
-out2, _ := os.Create("modified.iso")
-img2.Save(out2)
-```
-
-Bootable, USB-writable images:
-
-```go
-img.AddBootImage(iso9660.BootImageConfig{
-    Path: "isolinux/isolinux.bin", Platform: boot.BIOS,
-    Emulation: boot.NoEmulation, LoadSize: 4, BootInfoTable: true,
-})
-img.AddBootImage(iso9660.BootImageConfig{
-    Path: "EFI/BOOT/efiboot.img", Platform: boot.EFI, Emulation: boot.NoEmulation,
-})
-img.SetHybridBoot(iso9660.HybridBootConfig{
-    MBRBootCode:      isohdpfx, // e.g. syslinux isohdpfx.bin
-    EFIBootImagePath: "EFI/BOOT/efiboot.img",
-    AddGPT:           true,
-})
-```
+Open an ISO and pull files out of it. Change what's inside and save it back.
+Build a brand-new image from a folder, including ones that boot on real
+hardware from a USB stick.
 
 ## Command line tools
 
@@ -79,31 +18,89 @@ go install github.com/bgrewell/iso-kit/cmd/isocreate@latest
 go install github.com/bgrewell/iso-kit/cmd/isoview@latest
 ```
 
-- **isoextract** — extract files and boot images from an ISO
-- **isocreate** — build an ISO from a directory tree
-  (`isocreate -V MYVOL -o out.iso ./srcdir`, plus `--bios-boot`,
-  `--efi-boot`, `--isohybrid`, `--gpt`, `--joliet`, `--level`)
-- **isoview** — inspect image structure and layout
+**Extract an ISO:**
 
-*Note: ensure `$GOBIN` is in your `$PATH`
-(`export PATH=$PATH:$(go env GOPATH)/bin`).*
+```bash
+isoextract -o ./extracted ubuntu-24.04.iso
+```
 
-## Format support
+**Build an ISO from a folder:**
 
-| Capability | Read | Write |
-|---|---|---|
+```bash
+isocreate -V "MY_BACKUP" -o backup.iso ./my-files
+```
+
+**Build a bootable, USB-writable ISO:**
+
+```bash
+isocreate -V "MY_LINUX" -o my-linux.iso \
+  --bios-boot isolinux/isolinux.bin \
+  --efi-boot EFI/BOOT/efiboot.img \
+  --isohybrid-mbr isohdpfx.bin --gpt \
+  ./my-linux-root
+```
+
+**Look inside an ISO:**
+
+```bash
+isoview ubuntu-24.04.iso
+```
+
+## Using the library
+
+```bash
+go get github.com/bgrewell/iso-kit
+```
+
+```go
+import "github.com/bgrewell/iso-kit/pkg/iso9660"
+
+// Open an ISO and read a file out of it.
+f, _ := os.Open("image.iso")
+img, _ := iso9660.Open(f)
+data, _ := img.ReadFile("docs/readme.txt")
+
+// Change it and save a new copy.
+img.AddFile("extras/new-file.txt", []byte("added!\n"))
+img.RemoveFile("obsolete.txt")
+out, _ := os.Create("modified.iso")
+img.Save(out)
+```
+
+```go
+// Or build one from scratch.
+img, _ := iso9660.Create("MYVOLUME")
+img.AddLocalDirectory("./payload", "/")
+out, _ := os.Create("new.iso")
+img.Save(out)
+```
+
+That's the whole core loop: `Open` or `Create`, change things, `Save`.
+Long filenames, mixed case, permissions, and symlinks are preserved
+automatically (Rock Ridge is on by default). See the
+**[usage guide](docs/USAGE.md)** for bootable images, Windows-friendly
+naming (Joliet), and everything else.
+
+## What it supports
+
+| | Read | Write |
+|---|:---:|:---:|
 | ISO 9660 | ✅ | ✅ |
-| Rock Ridge (SUSP/RRIP: SP, CE, ER, PX, NM, SL, TF, PN, CL, PL, RE) | ✅ | ✅ |
-| Joliet (UCS-2 hierarchy) | ✅ | ✅ |
-| El Torito (multi-boot, BIOS + EFI sections, boot info table) | ✅ | ✅ |
-| Hybrid MBR / GPT (USB boot) | ✅ | ✅ |
-| Multi-extent files (>4 GiB) | ✅ | ❌ |
-| UDF (ECMA-167) | ✅ | ❌ |
+| Rock Ridge — POSIX names, permissions, symlinks | ✅ | ✅ |
+| Joliet — Windows Unicode names | ✅ | ✅ |
+| El Torito — BIOS + EFI boot | ✅ | ✅ |
+| Hybrid MBR/GPT — boots from USB | ✅ | ✅ |
+| Files over 4 GiB (multi-extent) | ✅ | — |
+| UDF | ✅ | — |
 
-Interoperability is verified in CI against xorriso (Rock Ridge, Joliet,
-El Torito reporting) and util-linux fdisk / parted (hybrid partition tables).
+Output is verified against independent tools (xorriso, fdisk, parted) in CI.
 
-## Roadmap
+## Documentation
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the detailed phase plan and
-remaining work (UDF write support, multi-extent write, and more).
+- **[Usage guide](docs/USAGE.md)** — the full tour: options, bootable
+  images, modifying existing ISOs, CLI reference, limitations
+- **[Architecture](docs/ARCHITECTURE.md)** — how the library works inside,
+  for contributors
+- **[Roadmap](docs/ROADMAP.md)** — what's done and what's planned
+
+> The API is pre-1.0 and may still change between releases.

@@ -650,6 +650,21 @@ func (iso *ISO9660) AddFile(path string, data []byte) error {
 	return nil
 }
 
+// AddSymlink adds a symbolic link at the given path pointing at target,
+// creating parent directories as needed. The link is recorded as a Rock
+// Ridge SL entry, so it survives only in images written with Rock Ridge
+// enabled (the default for created images).
+func (iso *ISO9660) AddSymlink(path, target string) error {
+	if iso.root == nil {
+		return errors.New("no filesystem is loaded")
+	}
+	if _, err := iso.root.AddSymlink(path, target); err != nil {
+		return err
+	}
+	iso.markDirty()
+	return nil
+}
+
 // AddDirectory creates an empty directory at the given path, creating
 // parent directories as needed.
 func (iso *ISO9660) AddDirectory(path string) error {

@@ -19,9 +19,7 @@ func TestExtractMaterializesSymlinks(t *testing.T) {
 	iso, err := Create("SYMEXT")
 	require.NoError(t, err)
 	require.NoError(t, iso.AddFile("target.txt", []byte("content")))
-	_, err = iso.root.AddSymlink("link.txt", "target.txt")
-	require.NoError(t, err)
-	iso.markDirty()
+	require.NoError(t, iso.AddSymlink("link.txt", "target.txt"))
 	path := saveToTempFile(t, iso)
 
 	f, err := os.Open(path)
