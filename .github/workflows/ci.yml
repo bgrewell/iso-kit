@@ -41,3 +41,10 @@ jobs:
 
       - name: Coverage
         run: go test -count=1 -coverprofile=coverage.out -coverpkg=./... ./... && go tool cover -func=coverage.out | tail -1
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
