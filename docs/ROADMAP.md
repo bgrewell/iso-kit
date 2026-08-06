@@ -118,14 +118,27 @@ Goal: create and modify ISOs. Largest and most architecturally significant phase
 
 Goal: proper extension support with spec-compliant serialization.
 
-- [ ] Implement SUSP framework (SP, CE, ER, ST, ES)
-  - Continuation areas for RR data exceeding System Use space
-- [ ] Rewrite `MarshalRockRidge` from scratch
-  - PX (36 bytes, both-endian), NM/SL (with flags), TF (7/17-byte ISO format),
-    CL/PL (both-endian), RR signature entry
-- [ ] Fix Rock Ridge unmarshal: add PN, CL, PL, RE, SF + fix TF/SL/NM parsing
-- [ ] Integrate Rock Ridge into write pipeline
-  - SP+ER in root, PX/NM/TF in every record, CE for overflow
+- [x] Implement SUSP framework (`pkg/iso9660/extensions/susp.go`)
+  - SP, CE, ER, ST, RR entry builders; continuation areas for RR data
+    exceeding System Use space (per-record chunks, never crossing a sector)
+- [x] Rewrite `MarshalRockRidge` from scratch
+  - PX (36 bytes, both-endian), NM/SL (with flags and multi-entry
+    continuation), TF (7-byte recording format), CL/PL (both-endian), RR
+    signature entry with correct flag bits
+- [x] Fix Rock Ridge unmarshal: add PN, CL, PL, RE, SF, CE + fix TF/SL/NM parsing
+  - TF honors flag-bit ordering and long/short form; SL decodes component
+    records (root/current/parent); NM continuation appends; parser follows
+    CE continuation chains (bounded against cycles)
+- [x] Integrate Rock Ridge into write pipeline
+  - SP in root ".", ER in continuation area, RR/PX/TF on every record
+    (including "." and ".."), NM per child, SL for symlinks, CE for overflow
+  - ISO identifiers mangled (uppercase, d-chars, 31-char cap, deterministic
+    ~N dedupe) with POSIX names preserved via NM
+  - Tree carries uid/gid and symlink nodes; AddLocalDirectory imports
+    symlinks; created images write RR by default
+    (`WithCreateRockRidgeEnabled(false)` to disable); opened images keep RR
+    iff the source had it
+  - Verified with xorriso: POSIX names, PX modes, and symlinks recognized
 - [ ] Complete Joliet write support
   - Separate UCS-2 directory tree, separate path tables, 64-char filename validation
 - [ ] Fix El Torito entry field offsets to match specification
@@ -135,7 +148,11 @@ Goal: proper extension support with spec-compliant serialization.
 - [ ] Integrate El Torito into Create/Save pipeline
 - [ ] Wire character validation into descriptor write path
 - [ ] Implement ISO 9660 filename validation (Level 1/2/3)
+  - Partially covered by the Rock Ridge identifier mangler; strict
+    level-selectable validation still open
 - [ ] Add multi-extent file assembly for reading (Level 3 / >4GB files)
+- [ ] Extract() should materialize Rock Ridge symlinks as symlinks
+  (currently written as empty files on extraction)
 
 ## P3: Advanced — UDF, Hybrid ISO, Production Readiness
 

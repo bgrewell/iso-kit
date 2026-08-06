@@ -149,18 +149,28 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 	// becomes the source of truth for Save.
 	root := tree.NewRoot()
 	for _, entry := range filesystemEntries {
-		if entry.IsDir {
-			node, err := root.AddDirectory(entry.FullPath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to build directory tree: %w", err)
+		var node *tree.Node
+		record := entry.DirectoryRecord()
+		switch {
+		case entry.IsDir:
+			node, err = root.AddDirectory(entry.FullPath)
+			if err == nil {
+				node.SetMode(entry.Mode)
+				node.SetModTime(entry.ModTime)
 			}
-			node.SetMode(entry.Mode)
-			node.SetModTime(entry.ModTime)
-		} else {
-			_, err := root.AddExistingFile(entry.FullPath, isoReader, entry.Location, entry.Size, entry.Mode, entry.ModTime)
-			if err != nil {
-				return nil, fmt.Errorf("failed to build directory tree: %w", err)
+		case record != nil && record.RockRidge != nil && record.RockRidge.SymlinkTarget != nil:
+			node, err = root.AddSymlink(entry.FullPath, *record.RockRidge.SymlinkTarget)
+			if err == nil {
+				node.SetModTime(entry.ModTime)
 			}
+		default:
+			node, err = root.AddExistingFile(entry.FullPath, isoReader, entry.Location, entry.Size, entry.Mode, entry.ModTime)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to build directory tree: %w", err)
+		}
+		if entry.UID != nil && entry.GID != nil {
+			node.SetOwnership(*entry.UID, *entry.GID)
 		}
 	}
 
@@ -186,8 +196,9 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 func Create(name string, opts ...option.CreateOption) (*ISO9660, error) {
 	// Set default create options
 	createOptions := &option.CreateOptions{
-		Preparer: fmt.Sprintf("iso-kit %s %s (%s) %s", version.Version(), version.Revision(), version.Branch(), version.Date()),
-		Logger:   logging.DefaultLogger(),
+		Preparer:         fmt.Sprintf("iso-kit %s %s (%s) %s", version.Version(), version.Revision(), version.Branch(), version.Date()),
+		RockRidgeEnabled: true,
+		Logger:           logging.DefaultLogger(),
 	}
 
 	for _, opt := range opts {
@@ -679,6 +690,18 @@ func (iso *ISO9660) AddLocalDirectory(sourcePath, targetPath string) error {
 			node.SetModTime(fi.ModTime())
 			return nil
 		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return fmt.Errorf("failed to read symlink %s: %w", path, err)
+			}
+			node, err := iso.root.AddSymlink(isoPath, target)
+			if err != nil {
+				return err
+			}
+			node.SetModTime(fi.ModTime())
+			return nil
+		}
 		if !fi.Mode().IsRegular() {
 			iso.logger.Info("Skipping non-regular file", "path", path)
 			return nil
@@ -1031,9 +1054,17 @@ func (iso *ISO9660) saveRebuild(writer io.WriterAt) error {
 	}
 	iso.pathTables = []*pathtable.PathTable{ptL, ptM}
 
-	// 5. Directory extents in breadth-first order.
+	// 5. Rock Ridge continuation area (ER entry and overflow), if any.
+	if contData := iso.marshalContinuationArea(); contData != nil {
+		contOffset := int64(iso.layout.contBaseSector) * consts.ISO9660_SECTOR_SIZE
+		if _, err := writer.WriteAt(contData, contOffset); err != nil {
+			return fmt.Errorf("failed to write Rock Ridge continuation area: %w", err)
+		}
+	}
+
+	// 6. Directory extents in breadth-first order.
 	for _, dir := range iso.layout.dirs {
-		data, err := marshalDirectoryExtent(dir)
+		data, err := marshalDirectoryExtent(dir, iso.layout.plans[dir])
 		if err != nil {
 			return err
 		}
@@ -1042,7 +1073,7 @@ func (iso *ISO9660) saveRebuild(writer io.WriterAt) error {
 		}
 	}
 
-	// 6. File extents, each zero-padded to whole sectors.
+	// 7. File extents, each zero-padded to whole sectors.
 	for _, file := range iso.layout.files {
 		if err := iso.writeFileExtent(writer, file); err != nil {
 			return err
