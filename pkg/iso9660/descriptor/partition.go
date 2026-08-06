@@ -3,9 +3,12 @@ package descriptor
 import (
 	"fmt"
 	"github.com/bgrewell/iso-kit/pkg/consts"
+	"github.com/bgrewell/iso-kit/pkg/helpers"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/directory"
+	"github.com/bgrewell/iso-kit/pkg/iso9660/encoding"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/info"
 	"github.com/bgrewell/iso-kit/pkg/logging"
+	"strings"
 	"time"
 )
 
@@ -146,10 +149,94 @@ func (v VolumePartitionDescriptorBody) Size() int {
 	return int(v.ObjectSize)
 }
 
+// Marshal serializes the Volume Partition Descriptor into its 2048-byte
+// on-disk representation (ECMA-119 8.6).
 func (d *VolumePartitionDescriptor) Marshal() ([]byte, error) {
-	return []byte{}, nil
+	var buf [consts.ISO9660_SECTOR_SIZE]byte
+	offset := 0
+
+	headerBytes, err := d.VolumeDescriptorHeader.Marshal()
+	if err != nil {
+		return buf[:], fmt.Errorf("failed to marshal VolumeDescriptorHeader: %w", err)
+	}
+	copy(buf[0:7], headerBytes[:])
+	offset += 7
+
+	// Unused field: 1 byte.
+	buf[offset] = d.UnusedField1
+	offset++
+
+	// System Identifier: 32 bytes, space padded.
+	copy(buf[offset:offset+32], helpers.PadString(d.VolumePartitionDescriptorBody.SystemIdentifier, 32))
+	offset += 32
+
+	// Volume Partition Identifier: 32 bytes, space padded.
+	copy(buf[offset:offset+32], helpers.PadString(d.VolumePartitionIdentifier, 32))
+	offset += 32
+
+	// Volume Partition Location: 8 bytes, both-byte orders.
+	locBytes := encoding.MarshalBothByteOrders32(d.VolumePartitionLocation)
+	copy(buf[offset:offset+8], locBytes[:])
+	offset += 8
+
+	// Volume Partition Size: 8 bytes, both-byte orders.
+	sizeBytes := encoding.MarshalBothByteOrders32(d.VolumePartitionSize)
+	copy(buf[offset:offset+8], sizeBytes[:])
+	offset += 8
+
+	// System Use: remaining bytes.
+	copy(buf[offset:offset+PARTITION_SYSTEM_USE_SIZE], d.SystemUse[:])
+	offset += PARTITION_SYSTEM_USE_SIZE
+
+	if offset != consts.ISO9660_SECTOR_SIZE {
+		return buf[:], fmt.Errorf("marshal VolumePartitionDescriptor: incorrect offset %d", offset)
+	}
+	return buf[:], nil
 }
 
+// Unmarshal parses a 2048-byte sector into the VolumePartitionDescriptor.
 func (d *VolumePartitionDescriptor) Unmarshal(data [consts.ISO9660_SECTOR_SIZE]byte) error {
+	offset := 0
+
+	var headerBytes [7]byte
+	copy(headerBytes[:], data[0:7])
+	if err := d.VolumeDescriptorHeader.Unmarshal(headerBytes); err != nil {
+		return fmt.Errorf("failed to unmarshal VolumeDescriptorHeader: %w", err)
+	}
+	offset += 7
+
+	d.UnusedField1 = data[offset]
+	offset++
+
+	d.VolumePartitionDescriptorBody.SystemIdentifier = strings.TrimRight(string(data[offset:offset+32]), " ")
+	offset += 32
+
+	d.VolumePartitionIdentifier = strings.TrimRight(string(data[offset:offset+32]), " ")
+	offset += 32
+
+	var locBytes [8]byte
+	copy(locBytes[:], data[offset:offset+8])
+	location, err := encoding.UnmarshalUint32LSBMSB(locBytes)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal VolumePartitionLocation: %w", err)
+	}
+	d.VolumePartitionLocation = location
+	offset += 8
+
+	var sizeBytes [8]byte
+	copy(sizeBytes[:], data[offset:offset+8])
+	size, err := encoding.UnmarshalUint32LSBMSB(sizeBytes)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal VolumePartitionSize: %w", err)
+	}
+	d.VolumePartitionSize = size
+	offset += 8
+
+	copy(d.SystemUse[:], data[offset:offset+PARTITION_SYSTEM_USE_SIZE])
+	offset += PARTITION_SYSTEM_USE_SIZE
+
+	if offset != consts.ISO9660_SECTOR_SIZE {
+		return fmt.Errorf("unmarshal VolumePartitionDescriptor: incorrect offset %d", offset)
+	}
 	return nil
 }

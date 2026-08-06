@@ -33,8 +33,9 @@ type Node struct {
 	// Sector location of the extent in the backing reader.
 	location uint32
 	// Content size in bytes. For reader-backed files this is the extent
-	// data length; for in-memory files it mirrors len(data).
-	size uint32
+	// data length (or assembled multi-extent total); for in-memory files
+	// it mirrors len(data).
+	size uint64
 
 	mode    os.FileMode
 	modTime time.Time
@@ -74,7 +75,7 @@ func (n *Node) IsRoot() bool { return n.parent == nil }
 func (n *Node) Parent() *Node { return n.parent }
 
 // Size returns the content size in bytes. Directories return 0.
-func (n *Node) Size() uint32 { return n.size }
+func (n *Node) Size() uint64 { return n.size }
 
 // Mode returns the POSIX file mode.
 func (n *Node) Mode() os.FileMode { return n.mode }
@@ -255,7 +256,7 @@ func (n *Node) AddFile(path string, data []byte) (*Node, error) {
 		name:    name,
 		parent:  dir,
 		data:    data,
-		size:    uint32(len(data)),
+		size:    uint64(len(data)),
 		mode:    0o644,
 		modTime: time.Now(),
 	}
@@ -296,7 +297,7 @@ func (n *Node) AddSymlink(path, target string) (*Node, error) {
 
 // AddExistingFile inserts a file whose content is backed by a reader at a
 // sector location, used when building the tree from a parsed image.
-func (n *Node) AddExistingFile(path string, reader io.ReaderAt, location, size uint32, mode os.FileMode, modTime time.Time) (*Node, error) {
+func (n *Node) AddExistingFile(path string, reader io.ReaderAt, location uint32, size uint64, mode os.FileMode, modTime time.Time) (*Node, error) {
 	parts := splitPath(path)
 	if len(parts) == 0 {
 		return nil, fmt.Errorf("file path is empty")

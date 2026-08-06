@@ -151,7 +151,6 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 	root := tree.NewRoot()
 	for _, entry := range filesystemEntries {
 		var node *tree.Node
-		record := entry.DirectoryRecord()
 		switch {
 		case entry.IsDir:
 			node, err = root.AddDirectory(entry.FullPath)
@@ -159,11 +158,15 @@ func Open(isoReader io.ReaderAt, opts ...option.OpenOption) (*ISO9660, error) {
 				node.SetMode(entry.Mode)
 				node.SetModTime(entry.ModTime)
 			}
-		case record != nil && record.RockRidge != nil && record.RockRidge.SymlinkTarget != nil:
-			node, err = root.AddSymlink(entry.FullPath, *record.RockRidge.SymlinkTarget)
+		case entry.IsSymlink():
+			node, err = root.AddSymlink(entry.FullPath, entry.SymlinkTarget)
 			if err == nil {
 				node.SetModTime(entry.ModTime)
 			}
+		case len(entry.Segments) > 0:
+			// Multi-extent file: the entry's reader maps offset 0 to the
+			// start of the assembled content.
+			node, err = root.AddExistingFile(entry.FullPath, entry.ContentReader(), 0, entry.Size, entry.Mode, entry.ModTime)
 		default:
 			node, err = root.AddExistingFile(entry.FullPath, isoReader, entry.Location, entry.Size, entry.Mode, entry.ModTime)
 		}
@@ -290,6 +293,8 @@ type ISO9660 struct {
 	root *tree.Node
 	// Sector assignments produced by Pack
 	layout *packLayout
+	// Hybrid (USB) boot configuration applied during Save
+	hybridBoot *HybridBootConfig
 	// Logger
 	logger *logging.Logger
 	// isPacked represents if the ISO9660 filesystem is packed and ready to write to disk
@@ -560,7 +565,7 @@ func (iso *ISO9660) refreshEntriesFromTree() error {
 			}
 			reader = r
 		}
-		entries = append(entries, filesystem.NewFileSystemEntry(
+		entry := filesystem.NewFileSystemEntry(
 			node.Name(),
 			node.FullPath(),
 			node.IsDir(),
@@ -573,7 +578,9 @@ func (iso *ISO9660) refreshEntriesFromTree() error {
 			node.ModTime(),
 			nil,
 			reader,
-		))
+		)
+		entry.SymlinkTarget = node.SymlinkTarget()
+		entries = append(entries, entry)
 		return nil
 	})
 	if err != nil {
@@ -770,6 +777,49 @@ func (iso *ISO9660) markDirty() {
 	iso.filesystemEntries = nil
 }
 
+// HybridBootConfig describes the system-area partition structures that
+// make an ISO image bootable when written directly to a USB drive or
+// disk ("isohybrid"). The El Torito catalog handles optical boot; these
+// structures cover BIOS and UEFI firmware reading the medium as a hard
+// disk.
+type HybridBootConfig struct {
+	// MBRBootCode is x86 boot code for the first 440 bytes of the image
+	// (e.g. syslinux's isohdpfx.bin). Optional; without it the MBR only
+	// carries the partition table, which suffices for UEFI-only boot.
+	MBRBootCode []byte
+	// EFIBootImagePath is the in-ISO path of the EFI system partition
+	// image (typically the same file registered with AddBootImage for
+	// the EFI platform). When set, the MBR gains a type 0xEF partition
+	// over the image, and with AddGPT an EFI System Partition entry.
+	EFIBootImagePath string
+	// AddGPT writes a GUID partition table (primary and backup) with an
+	// EFI System Partition entry. Requires EFIBootImagePath.
+	AddGPT bool
+	// PartitionType is the MBR type code of the whole-image partition.
+	// Zero selects 0xCD, the value GRUB hybrid images use.
+	PartitionType byte
+}
+
+// SetHybridBoot configures isohybrid partition structures to be written
+// into the system area during Save, making the image USB-bootable.
+func (iso *ISO9660) SetHybridBoot(cfg HybridBootConfig) error {
+	if len(cfg.MBRBootCode) > 440 {
+		return fmt.Errorf("MBR boot code is %d bytes; the boot code area holds at most 440", len(cfg.MBRBootCode))
+	}
+	if cfg.AddGPT && cfg.EFIBootImagePath == "" {
+		return errors.New("AddGPT requires EFIBootImagePath")
+	}
+	if cfg.EFIBootImagePath != "" {
+		node := iso.root.Lookup(cfg.EFIBootImagePath)
+		if node == nil || node.IsDir() {
+			return fmt.Errorf("EFI boot image not found in the image: %s", cfg.EFIBootImagePath)
+		}
+	}
+	iso.hybridBoot = &cfg
+	iso.markDirty()
+	return nil
+}
+
 // BootImageConfig describes a boot image to register in the El Torito
 // boot catalog. The image itself must already exist as a file in the ISO
 // (via AddFile or AddLocalDirectory).
@@ -854,7 +904,7 @@ func (iso *ISO9660) Extract(path string) error {
 	}
 
 	// Extract El Torito boot images if enabled
-	if iso.elTorito != nil && iso.openOptions.ElToritoEnabled {
+	if iso.elTorito != nil && iso.openOptions != nil && iso.openOptions.ElToritoEnabled {
 		err := iso.elTorito.ExtractBootImages(iso.isoReader, filepath.Join(path, iso.openOptions.BootFileExtractLocation))
 		if err != nil {
 			return fmt.Errorf("failed to extract El Torito boot images: %w", err)
@@ -879,8 +929,20 @@ func (iso *ISO9660) Extract(path string) error {
 		}
 
 		// if the option to strip version info is enabled, enhanced and rr are not enabled then strip the version info
-		if iso.openOptions.StripVersionInfo && !iso.openOptions.RockRidgeEnabled && !iso.openOptions.PreferJoliet {
+		if iso.openOptions != nil && iso.openOptions.StripVersionInfo && !iso.openOptions.RockRidgeEnabled && !iso.openOptions.PreferJoliet {
 			outputPath = strings.TrimSuffix(outputPath, ";1")
+		}
+
+		// Rock Ridge symbolic links materialize as symlinks, not files.
+		if entry.IsSymlink() {
+			// Replace any stale target from a previous extraction.
+			if err := os.Remove(outputPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("failed to replace existing path %s: %w", outputPath, err)
+			}
+			if err := os.Symlink(entry.SymlinkTarget, outputPath); err != nil {
+				return fmt.Errorf("failed to create symlink %s -> %s: %w", outputPath, entry.SymlinkTarget, err)
+			}
+			continue
 		}
 
 		if err := iso.extractFile(entry, outputPath, i+1, totalFiles); err != nil {
@@ -1212,7 +1274,131 @@ func (iso *ISO9660) saveRebuild(writer io.WriterAt) error {
 		}
 	}
 
+	// 9. Hybrid boot structures (MBR partition table and optional GPT)
+	// patched into the system area and image tail.
+	if iso.hybridBoot != nil {
+		if err := iso.applyHybridBoot(writer); err != nil {
+			return err
+		}
+	}
+
 	iso.isDirty = false
+	return nil
+}
+
+// applyHybridBoot writes the isohybrid MBR (and optionally GPT) into the
+// image: the MBR occupies the first 512 bytes of the system area, the
+// primary GPT LBAs 1-33, and the backup GPT a padded region appended
+// after the ISO 9660 data.
+func (iso *ISO9660) applyHybridBoot(writer io.WriterAt) error {
+	cfg := iso.hybridBoot
+
+	// Device size in 512-byte LBAs: the ISO data plus, with GPT, a
+	// 2048-aligned tail region holding the backup structures (33 LBAs
+	// rounded up to 40 = ten 2048-byte sectors).
+	totalLBAs := uint64(iso.layout.totalSectors) * 4
+	if cfg.AddGPT {
+		totalLBAs += 40
+	}
+
+	var efiStartLBA, efiSizeLBA uint32
+	if cfg.EFIBootImagePath != "" {
+		node := iso.root.Lookup(cfg.EFIBootImagePath)
+		if node == nil || node.IsDir() {
+			return fmt.Errorf("EFI boot image not found in the image: %s", cfg.EFIBootImagePath)
+		}
+		efiStartLBA = node.PackedLocation * 4
+		efiSizeLBA = (uint32(node.Size()) + 511) / 512
+		if efiSizeLBA == 0 {
+			return fmt.Errorf("EFI boot image %s is empty", cfg.EFIBootImagePath)
+		}
+	}
+
+	// Build the MBR. With GPT, a protective MBR (single 0xEE partition
+	// from LBA 1) is required — partition tools ignore a GPT that is not
+	// announced this way, and the ESP lives in the GPT instead. Without
+	// GPT, the classic isohybrid layout: a bootable whole-image
+	// partition plus a type 0xEF entry over the ESP image.
+	mbr := &systemarea.MBR{}
+	copy(mbr.BootCode[:], cfg.MBRBootCode)
+	if cfg.AddGPT {
+		mbr.Partitions[0] = systemarea.MBRPartition{
+			Status:   0x80, // bootable for BIOS firmware that requires an active partition
+			Type:     systemarea.MBR_TYPE_GPT_PROTECTIVE,
+			StartLBA: 1,
+			SizeLBA:  uint32(totalLBAs - 1),
+		}
+	} else {
+		partType := cfg.PartitionType
+		if partType == 0 {
+			partType = systemarea.MBR_TYPE_ISO9660
+		}
+		mbr.Partitions[0] = systemarea.MBRPartition{
+			Status:   0x80,
+			Type:     partType,
+			StartLBA: 0,
+			SizeLBA:  uint32(totalLBAs),
+		}
+		if efiSizeLBA > 0 {
+			mbr.Partitions[1] = systemarea.MBRPartition{
+				Status:   0x00,
+				Type:     systemarea.MBR_TYPE_EFI_SYSTEM,
+				StartLBA: efiStartLBA,
+				SizeLBA:  efiSizeLBA,
+			}
+		}
+	}
+	mbrBytes := mbr.Marshal()
+	if _, err := writer.WriteAt(mbrBytes, 0); err != nil {
+		return fmt.Errorf("failed to write hybrid MBR: %w", err)
+	}
+	// Keep the in-memory system area consistent for later saves.
+	copy(iso.systemArea.Contents[:512], mbrBytes)
+
+	if !cfg.AddGPT {
+		return nil
+	}
+
+	gpt := &systemarea.GPT{
+		Partitions: []systemarea.GPTPartition{{
+			TypeGUID: systemarea.GUID_EFI_SYSTEM,
+			FirstLBA: uint64(efiStartLBA),
+			LastLBA:  uint64(efiStartLBA) + uint64(efiSizeLBA) - 1,
+			Name:     "EFI System Partition",
+		}},
+	}
+	gptLayout, err := gpt.Build(totalLBAs)
+	if err != nil {
+		return fmt.Errorf("failed to build GPT: %w", err)
+	}
+
+	writes := []struct {
+		data []byte
+		lba  uint64
+	}{
+		{gptLayout.PrimaryHeader, 1},
+		{gptLayout.Entries, 2},
+		{gptLayout.BackupEntries, totalLBAs - 1 - 32},
+		{gptLayout.BackupHeader, totalLBAs - 1},
+	}
+	for _, w := range writes {
+		if _, err := writer.WriteAt(w.data, int64(w.lba)*512); err != nil {
+			return fmt.Errorf("failed to write GPT structure at LBA %d: %w", w.lba, err)
+		}
+	}
+	copy(iso.systemArea.Contents[512:512+len(gptLayout.PrimaryHeader)], gptLayout.PrimaryHeader)
+	copy(iso.systemArea.Contents[1024:1024+len(gptLayout.Entries)], gptLayout.Entries)
+
+	// Zero-fill the tail region between the ISO data and the backup GPT
+	// so the appended area is fully initialized.
+	isoEnd := int64(iso.layout.totalSectors) * consts.ISO9660_SECTOR_SIZE
+	backupStart := int64(totalLBAs-1-32) * 512
+	if gap := backupStart - isoEnd; gap > 0 {
+		if _, err := writer.WriteAt(make([]byte, gap), isoEnd); err != nil {
+			return fmt.Errorf("failed to pad GPT tail region: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1267,7 +1453,7 @@ func (iso *ISO9660) writeFileExtent(writer io.WriterAt, node *tree.Node) error {
 	if written != int64(node.Size()) {
 		return fmt.Errorf("short write for %q: wrote %d of %d bytes", node.FullPath(), written, node.Size())
 	}
-	if pad := int64(sectorsFor(node.Size()))*consts.ISO9660_SECTOR_SIZE - written; pad > 0 {
+	if pad := int64(sectorsFor(uint32(node.Size())))*consts.ISO9660_SECTOR_SIZE - written; pad > 0 {
 		if _, err := writer.WriteAt(make([]byte, pad), targetOffset+written); err != nil {
 			return fmt.Errorf("failed to pad extent of %q: %w", node.FullPath(), err)
 		}

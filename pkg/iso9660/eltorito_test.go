@@ -56,8 +56,8 @@ func TestElToritoCreateAndReopen(t *testing.T) {
 	require.Len(t, bootEntries, 2)
 
 	// The BIOS entry loads 4 virtual sectors; the EFI entry the full image.
-	require.Equal(t, uint32(4*512), bootEntries[0].Size)
-	require.Equal(t, uint32(((1440*1024)+511)/512*512), bootEntries[1].Size)
+	require.Equal(t, uint64(4*512), bootEntries[0].Size)
+	require.Equal(t, uint64(((1440*1024)+511)/512*512), bootEntries[1].Size)
 
 	// The boot file content is still readable through the filesystem and
 	// matches what went in (the catalog references the same extent).

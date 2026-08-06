@@ -18,6 +18,11 @@ type CreateOptions struct {
 	// RockRidgeEnabled controls whether created images carry Rock Ridge
 	// (POSIX metadata) extensions. Defaults to true.
 	RockRidgeEnabled bool
+	// InterchangeLevel selects the ISO 9660 interchange level enforced on
+	// identifiers at pack time: 1 (8.3 names), 2 or 3 (31-character
+	// names). Zero (the default) applies no validation; with Rock Ridge
+	// the mangler still produces level 2 compatible identifiers.
+	InterchangeLevel int
 	Logger           *logging.Logger
 }
 
@@ -50,6 +55,12 @@ func WithJolietEnabled(jolietEnabled bool) CreateOption {
 func WithCreateRockRidgeEnabled(rockRidgeEnabled bool) CreateOption {
 	return func(o *CreateOptions) {
 		o.RockRidgeEnabled = rockRidgeEnabled
+	}
+}
+
+func WithInterchangeLevel(level int) CreateOption {
+	return func(o *CreateOptions) {
+		o.InterchangeLevel = level
 	}
 }
 

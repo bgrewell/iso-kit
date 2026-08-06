@@ -6,6 +6,7 @@ import (
 
 	"github.com/bgrewell/iso-kit/pkg/iso9660/encoding"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/tree"
+	"github.com/bgrewell/iso-kit/pkg/iso9660/validation"
 )
 
 // Maximum identifier length (excluding the ";1" version suffix) when
@@ -15,9 +16,15 @@ const mangledIdentifierMaxLen = 31
 
 // mangleISOName converts a POSIX name into a valid ISO 9660 identifier:
 // uppercase d-characters, at most one "." separator (files only), length
-// capped at mangledIdentifierMaxLen. Used when Rock Ridge is enabled, in
-// which case the original name travels in the NM entry.
-func mangleISOName(name string, isDir bool) string {
+// capped per the interchange level (8.3 at level 1, 31 characters
+// otherwise). Used when Rock Ridge is enabled, in which case the original
+// name travels in the NM entry.
+func mangleISOName(name string, isDir bool, level int) string {
+	maxLen := mangledIdentifierMaxLen
+	maxExt := 3
+	if level == validation.InterchangeLevel1 {
+		maxLen = 8 // name portion; extension handled separately
+	}
 	base, ext := name, ""
 	if !isDir {
 		if i := strings.LastIndexByte(name, '.'); i > 0 && i < len(name)-1 {
@@ -42,8 +49,8 @@ func mangleISOName(name string, isDir bool) string {
 	ext = mangle(ext)
 
 	if isDir || ext == "" {
-		if len(base) > mangledIdentifierMaxLen {
-			base = base[:mangledIdentifierMaxLen]
+		if len(base) > maxLen {
+			base = base[:maxLen]
 		}
 		if base == "" {
 			base = "_"
@@ -53,10 +60,13 @@ func mangleISOName(name string, isDir bool) string {
 
 	// Keep the extension (up to 3 characters is conventional; longer is
 	// tolerated by Level 2 readers, but trim to keep the total in range).
-	if len(ext) > 3 {
-		ext = ext[:3]
+	if len(ext) > maxExt {
+		ext = ext[:maxExt]
 	}
-	maxBase := mangledIdentifierMaxLen - len(ext) - 1
+	maxBase := maxLen - len(ext) - 1
+	if level == validation.InterchangeLevel1 {
+		maxBase = 8
+	}
 	if len(base) > maxBase {
 		base = base[:maxBase]
 	}
@@ -68,22 +78,26 @@ func mangleISOName(name string, isDir bool) string {
 
 // assignIdentifiers produces the on-disk identifier for every child of a
 // directory. With mangling enabled (Rock Ridge), names are converted to
-// valid identifiers and collisions are resolved deterministically with a
-// numeric tail; otherwise names are used as-is. File identifiers carry the
-// ";1" version suffix.
-func assignIdentifiers(children []*tree.Node, mangled bool) map[*tree.Node]string {
+// valid identifiers per the interchange level and collisions are resolved
+// deterministically with a numeric tail; otherwise names are used as-is
+// but validated against the level when one is set. File identifiers carry
+// the ";1" version suffix.
+func assignIdentifiers(children []*tree.Node, mangled bool, level int) (map[*tree.Node]string, error) {
 	out := make(map[*tree.Node]string, len(children))
 	used := make(map[string]bool, len(children))
 
 	for _, child := range children {
 		var id string
 		if mangled {
-			id = mangleISOName(child.Name(), child.IsDir())
+			id = mangleISOName(child.Name(), child.IsDir(), level)
 			if used[id] {
 				id = dedupeIdentifier(id, child.IsDir(), used)
 			}
 		} else {
 			id = child.Name()
+			if err := validation.ValidateFileIdentifier(id, child.IsDir(), level); err != nil {
+				return nil, fmt.Errorf("%q: %w (enable Rock Ridge for automatic name mangling)", child.FullPath(), err)
+			}
 		}
 		used[id] = true
 		if !child.IsDir() {
@@ -91,7 +105,7 @@ func assignIdentifiers(children []*tree.Node, mangled bool) map[*tree.Node]strin
 		}
 		out[child] = id
 	}
-	return out
+	return out, nil
 }
 
 // Joliet allows 64 UCS-2 characters per identifier.
