@@ -332,6 +332,20 @@ func (et *ElTorito) UnmarshalBinary(data []byte) error {
 	for offset := 32; offset < len(data); offset += 32 {
 		entryData := data[offset : offset+32]
 
+		// Entries promised by a section header are consumed even with a
+		// 0x00 boot indicator: not-bootable entries share that value
+		// with empty catalog space, and only the header count
+		// disambiguates them.
+		if sectionCount > 0 {
+			entry := parseCatalogEntry(entryData, currentPlatform)
+			if et.Logger != nil {
+				et.Logger.Trace("Parsed section entry", "entry", entry)
+			}
+			et.Entries = append(et.Entries, entry)
+			sectionCount--
+			continue
+		}
+
 		// Check for End of Catalog
 		if entryData[0] == 0x00 {
 			if et.Logger != nil {
@@ -347,17 +361,6 @@ func (et *ElTorito) UnmarshalBinary(data []byte) error {
 			if et.Logger != nil {
 				et.Logger.Debug("Section header found", "offset", offset, "entries", sectionCount)
 			}
-			continue
-		}
-
-		// Parse Section Entries
-		if sectionCount > 0 {
-			entry := parseCatalogEntry(entryData, currentPlatform)
-			if et.Logger != nil {
-				et.Logger.Trace("Parsed section entry", "entry", entry)
-			}
-			et.Entries = append(et.Entries, entry)
-			sectionCount--
 			continue
 		}
 
