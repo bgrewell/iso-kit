@@ -100,6 +100,16 @@ func (n *Node) SetOwnership(uid, gid uint32) { n.uid, n.gid = uid, gid }
 // IsSymlink reports whether the node is a symbolic link.
 func (n *Node) IsSymlink() bool { return n.symlinkTarget != "" }
 
+// SourceLocation returns the node's extent sector in the backing image it
+// was parsed from, and whether the node is backed by such an image.
+// In-memory (pending) nodes report false.
+func (n *Node) SourceLocation() (uint32, bool) {
+	if n.reader == nil || n.data != nil {
+		return 0, false
+	}
+	return n.location, true
+}
+
 // SymlinkTarget returns the symlink target path, or "" for non-links.
 func (n *Node) SymlinkTarget() string { return n.symlinkTarget }
 
