@@ -190,9 +190,17 @@ Goal: UDF support, USB-bootable hybrid ISOs, production CLI, comprehensive testi
 - [ ] UDF Volume Recognition Sequence and AVDP parsing
 - [ ] UDF volume descriptor and partition parsing (ECMA-167)
 - [ ] UDF file system traversal (FSD → ICB → File Entry → FID)
-- [ ] System area MBR partition table parsing and generation
-- [ ] GPT support for UEFI hybrid ISOs
-- [ ] Isohybrid post-processing (MBR + GPT after ISO build)
+- [x] System area MBR partition table parsing and generation
+  - `systemarea.MBR` with parse (`ParseMBR`), marshal, CHS synthesis
+- [x] GPT support for UEFI hybrid ISOs
+  - `systemarea.GPT`: primary + backup headers with CRC32s, 128-entry
+    array, deterministic GUIDs for reproducible output
+- [x] Isohybrid post-processing (MBR + GPT after ISO build)
+  - `SetHybridBoot(HybridBootConfig)`: MBR-only mode writes the classic
+    isohybrid layout (bootable whole-image partition + 0xEF ESP entry);
+    GPT mode writes a protective MBR + GPT with the EFI System Partition
+    and a backup GPT appended after the ISO data
+  - Verified with fdisk and parted: GPT disklabel and ESP recognized
 - [ ] Rebuild `isocreate` CLI with proper argument parsing
 - [ ] Comprehensive unit tests (directory, parser, pathtable, extensions, eltorito)
 - [ ] CI pipeline (GitHub Actions) + README update
