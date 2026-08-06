@@ -2,6 +2,7 @@ package iso9660
 
 import (
 	"cmp"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/bgrewell/iso-kit/pkg/consts"
@@ -769,6 +770,60 @@ func (iso *ISO9660) markDirty() {
 	iso.filesystemEntries = nil
 }
 
+// BootImageConfig describes a boot image to register in the El Torito
+// boot catalog. The image itself must already exist as a file in the ISO
+// (via AddFile or AddLocalDirectory).
+type BootImageConfig struct {
+	// Path of the boot image file inside the ISO.
+	Path string
+	// Platform the entry boots (BIOS, EFI, ...).
+	Platform boot.Platform
+	// Emulation mode; NoEmulation for modern loaders.
+	Emulation boot.Emulation
+	// LoadSegment for BIOS boots; 0 selects the traditional 0x7C0.
+	LoadSegment uint16
+	// LoadSize overrides the sector count (512-byte units) loaded by the
+	// firmware. Zero derives it from the image size. BIOS loaders such as
+	// isolinux conventionally use 4.
+	LoadSize uint16
+	// BootInfoTable patches a 56-byte boot information table into the
+	// image at offset 8 during Save (isolinux -boot-info-table).
+	BootInfoTable bool
+}
+
+// AddBootImage registers a boot image in the El Torito boot catalog. The
+// first image added becomes the initial/default entry; additional images
+// become section entries (e.g. a BIOS default plus an EFI section).
+func (iso *ISO9660) AddBootImage(cfg BootImageConfig) error {
+	if iso.root == nil {
+		return errors.New("no filesystem is loaded")
+	}
+	node := iso.root.Lookup(cfg.Path)
+	if node == nil {
+		return fmt.Errorf("boot image not found in the image: %s", cfg.Path)
+	}
+	if node.IsDir() {
+		return fmt.Errorf("boot image path is a directory: %s", cfg.Path)
+	}
+	if iso.elTorito == nil {
+		iso.elTorito = &boot.ElTorito{
+			Platform: cfg.Platform,
+			Logger:   iso.logger,
+		}
+	}
+	iso.elTorito.Entries = append(iso.elTorito.Entries, &boot.ElToritoEntry{
+		Platform:      cfg.Platform,
+		Emulation:     cfg.Emulation,
+		BootFile:      node.FullPath(),
+		Bootable:      true,
+		LoadSegment:   cfg.LoadSegment,
+		LoadSize:      cfg.LoadSize,
+		BootInfoTable: cfg.BootInfoTable,
+	})
+	iso.markDirty()
+	return nil
+}
+
 // CreateDirectories creates all directories from the ISO in the specified path.
 func (iso *ISO9660) CreateDirectories(path string) error {
 	// Ensure output directory exists
@@ -991,10 +1046,6 @@ func (iso *ISO9660) saveRebuild(writer io.WriterAt) error {
 		return errors.New("no filesystem is loaded")
 	}
 
-	if iso.volumeDescriptorSet.Boot != nil || iso.elTorito != nil {
-		iso.logger.Info("WARNING: El Torito boot structures are not yet supported in rebuilt images; the output will not be bootable")
-	}
-
 	if err := iso.Pack(); err != nil {
 		return fmt.Errorf("failed to pack image: %w", err)
 	}
@@ -1011,6 +1062,24 @@ func (iso *ISO9660) saveRebuild(writer io.WriterAt) error {
 	}
 	if _, err := writer.WriteAt(pvdBytes, int64(iso.layout.pvdSector)*consts.ISO9660_SECTOR_SIZE); err != nil {
 		return fmt.Errorf("failed to write primary volume descriptor: %w", err)
+	}
+
+	// 2a. El Torito boot record and catalog.
+	if iso.layout.elTorito {
+		brBytes, err := iso.volumeDescriptorSet.Boot.Marshal()
+		if err != nil {
+			return fmt.Errorf("failed to marshal boot record: %w", err)
+		}
+		if _, err := writer.WriteAt(brBytes, int64(iso.layout.bootRecordSector)*consts.ISO9660_SECTOR_SIZE); err != nil {
+			return fmt.Errorf("failed to write boot record: %w", err)
+		}
+		catalogBytes, err := iso.elTorito.Marshal()
+		if err != nil {
+			return fmt.Errorf("failed to marshal boot catalog: %w", err)
+		}
+		if _, err := writer.WriteAt(catalogBytes, int64(iso.layout.bootCatalogSector)*consts.ISO9660_SECTOR_SIZE); err != nil {
+			return fmt.Errorf("failed to write boot catalog: %w", err)
+		}
 	}
 
 	// 2b. Supplementary (Joliet) volume descriptor.
@@ -1117,7 +1186,66 @@ func (iso *ISO9660) saveRebuild(writer io.WriterAt) error {
 		}
 	}
 
+	// 8. Boot image blobs preserved from the source image, and boot
+	// information table patches.
+	if iso.layout.elTorito {
+		for _, blob := range iso.layout.bootBlobs {
+			if iso.isoReader == nil {
+				return errors.New("cannot preserve boot image: no source image reader")
+			}
+			padded := int64(sectorsFor(blob.sizeBytes)) * consts.ISO9660_SECTOR_SIZE
+			data := make([]byte, padded)
+			if _, err := iso.isoReader.ReadAt(data[:blob.sizeBytes], int64(blob.srcSector)*consts.ISO9660_SECTOR_SIZE); err != nil {
+				return fmt.Errorf("failed to read boot image extent at sector %d: %w", blob.srcSector, err)
+			}
+			if _, err := writer.WriteAt(data, int64(blob.dstSector)*consts.ISO9660_SECTOR_SIZE); err != nil {
+				return fmt.Errorf("failed to write boot image extent: %w", err)
+			}
+		}
+		for entry, node := range iso.layout.bootImageNodes {
+			if !entry.BootInfoTable {
+				continue
+			}
+			if err := iso.patchBootInfoTable(writer, node); err != nil {
+				return err
+			}
+		}
+	}
+
 	iso.isDirty = false
+	return nil
+}
+
+// patchBootInfoTable writes the 56-byte boot information table into a
+// boot image at offset 8 (isolinux -boot-info-table): PVD LBA, the
+// image's LBA and byte length, and a checksum over the 32-bit words from
+// offset 64 to the end of the image.
+func (iso *ISO9660) patchBootInfoTable(writer io.WriterAt, node *tree.Node) error {
+	content, err := node.ReadData(consts.ISO9660_SECTOR_SIZE)
+	if err != nil {
+		return fmt.Errorf("failed to read boot image for info table: %w", err)
+	}
+	if len(content) < 64 {
+		return fmt.Errorf("boot image %q too small for a boot info table (%d bytes)", node.FullPath(), len(content))
+	}
+
+	var checksum uint32
+	for i := 64; i < len(content); i += 4 {
+		var word [4]byte
+		copy(word[:], content[i:min(i+4, len(content))])
+		checksum += binary.LittleEndian.Uint32(word[:])
+	}
+
+	table := make([]byte, 56)
+	binary.LittleEndian.PutUint32(table[0:], consts.ISO9660_SYSTEM_AREA_SECTORS) // PVD LBA
+	binary.LittleEndian.PutUint32(table[4:], node.PackedLocation)
+	binary.LittleEndian.PutUint32(table[8:], uint32(len(content)))
+	binary.LittleEndian.PutUint32(table[12:], checksum)
+
+	offset := int64(node.PackedLocation)*consts.ISO9660_SECTOR_SIZE + 8
+	if _, err := writer.WriteAt(table, offset); err != nil {
+		return fmt.Errorf("failed to patch boot info table into %q: %w", node.FullPath(), err)
+	}
 	return nil
 }
 

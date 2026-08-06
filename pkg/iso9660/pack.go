@@ -1,11 +1,13 @@
 package iso9660
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io/fs"
 	"time"
 
 	"github.com/bgrewell/iso-kit/pkg/consts"
+	"github.com/bgrewell/iso-kit/pkg/iso9660/boot"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/descriptor"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/directory"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/extensions"
@@ -160,10 +162,21 @@ type dirPlan struct {
 // file extents but keep separate directory extents.
 type extentRef func(node *tree.Node) (location, size uint32)
 
+// bootBlob is a boot image extent preserved from a source image that has
+// no corresponding file in the directory tree; its raw sectors are copied
+// into the rebuilt image.
+type bootBlob struct {
+	entry     *boot.ElToritoEntry
+	srcSector uint32
+	sizeBytes uint32
+	dstSector uint32
+}
+
 // packLayout holds the sector assignments produced by Pack.
 type packLayout struct {
 	pvdSector        uint32
 	svdSector        uint32
+	bootRecordSector uint32
 	terminatorSector uint32
 	pathTableLSector uint32
 	pathTableMSector uint32
@@ -177,9 +190,16 @@ type packLayout struct {
 	// the ER entry).
 	contBaseSector uint32
 	contSectors    uint32
-	totalSectors   uint32
-	rockRidge      bool
-	joliet         bool
+	// Boot catalog sector (meaningful only when elTorito is true).
+	bootCatalogSector uint32
+	totalSectors      uint32
+	rockRidge         bool
+	joliet            bool
+	elTorito          bool
+	// bootImageNodes maps catalog entries to the tree files backing them.
+	bootImageNodes map[*boot.ElToritoEntry]*tree.Node
+	// bootBlobs preserves boot image extents with no tree counterpart.
+	bootBlobs []*bootBlob
 	// dirs is the breadth-first directory list; index+1 is each
 	// directory's path table number.
 	dirs []*tree.Node
@@ -540,6 +560,7 @@ func (iso *ISO9660) Pack() error {
 
 	rockRidge := iso.rockRidgeWriteEnabled()
 	joliet := iso.jolietWriteEnabled()
+	elTorito := iso.elTorito != nil && len(iso.elTorito.Entries) > 0
 	dirs := iso.root.Directories()
 	plans, identifiers, err := buildPlans(dirs, rockRidge)
 	if err != nil {
@@ -550,12 +571,19 @@ func (iso *ISO9660) Pack() error {
 		pvdSector:   consts.ISO9660_SYSTEM_AREA_SECTORS,
 		rockRidge:   rockRidge,
 		joliet:      joliet,
+		elTorito:    elTorito,
 		dirs:        dirs,
 		plans:       plans,
 		identifiers: identifiers,
 	}
 
 	descriptorSector := layout.pvdSector + 1
+	if elTorito {
+		// The El Torito specification requires the boot record at
+		// sector 17, immediately after the PVD.
+		layout.bootRecordSector = descriptorSector
+		descriptorSector++
+	}
 	if joliet {
 		layout.svdSector = descriptorSector
 		descriptorSector++
@@ -595,6 +623,11 @@ func (iso *ISO9660) Pack() error {
 	layout.contSectors = assignContinuationOffsets(dirs, plans, layout.contBaseSector)
 	next += layout.contSectors
 
+	if elTorito {
+		layout.bootCatalogSector = next
+		next++
+	}
+
 	for _, dir := range dirs {
 		dir.PackedLocation = next
 		next += sectorsFor(dir.PackedSize)
@@ -618,6 +651,52 @@ func (iso *ISO9660) Pack() error {
 	})
 	if err != nil {
 		return err
+	}
+
+	// Resolve boot catalog entries to their image extents: entries added
+	// via AddBootImage reference tree files by path; entries parsed from
+	// a source image are matched to tree files by their original extent
+	// location, falling back to a raw sector copy of the old extent.
+	if elTorito {
+		layout.bootImageNodes = make(map[*boot.ElToritoEntry]*tree.Node)
+		srcIndex := make(map[uint32]*tree.Node)
+		_ = iso.root.Walk(func(node *tree.Node) error {
+			if loc, ok := node.SourceLocation(); ok {
+				srcIndex[loc] = node
+			}
+			return nil
+		})
+		for _, entry := range iso.elTorito.Entries {
+			switch {
+			case entry.BootFile != "":
+				node := iso.root.Lookup(entry.BootFile)
+				if node == nil || node.IsDir() {
+					return fmt.Errorf("boot image %q not found in the image", entry.BootFile)
+				}
+				layout.bootImageNodes[entry] = node
+				entry.SetExtent(node.PackedLocation, node.Size())
+			case srcIndex[entry.Location()] != nil:
+				node := srcIndex[entry.Location()]
+				// Preserve the parsed sector count; the file may be
+				// larger than what the firmware loads at boot.
+				if entry.LoadSize == 0 {
+					entry.LoadSize = entry.SectorCount()
+				}
+				layout.bootImageNodes[entry] = node
+				entry.SetExtent(node.PackedLocation, node.Size())
+			default:
+				// No tree counterpart (e.g. hidden boot image): copy the
+				// raw extent. Only the loaded portion is known.
+				sizeBytes := uint32(entry.SectorCount()) * 512
+				blob := &bootBlob{entry: entry, srcSector: entry.Location(), sizeBytes: sizeBytes, dstSector: next}
+				next += sectorsFor(sizeBytes)
+				layout.bootBlobs = append(layout.bootBlobs, blob)
+				if entry.LoadSize == 0 {
+					entry.LoadSize = entry.SectorCount()
+				}
+				entry.SetExtent(blob.dstSector, sizeBytes)
+			}
+		}
 	}
 
 	layout.totalSectors = next
@@ -644,6 +723,30 @@ func (iso *ISO9660) Pack() error {
 	// The root directory record embedded in the PVD points at the root
 	// extent. It carries no system use data.
 	pvd.RootDirectoryRecord = buildDirectoryRecord(iso.root, "\x00", nil, layout.primaryRef)
+
+	// Update (or build) the boot record descriptor pointing at the boot
+	// catalog.
+	if elTorito {
+		br := iso.volumeDescriptorSet.Boot
+		if br == nil {
+			br = &descriptor.BootRecordDescriptor{
+				VolumeDescriptorHeader: descriptor.VolumeDescriptorHeader{
+					VolumeDescriptorType:    descriptor.TYPE_BOOT_RECORD,
+					StandardIdentifier:      consts.ISO9660_STD_IDENTIFIER,
+					VolumeDescriptorVersion: consts.ISO9660_VOLUME_DESC_VERSION,
+				},
+			}
+			iso.volumeDescriptorSet.Boot = br
+		}
+		br.BootSystemIdentifier = consts.EL_TORITO_BOOT_SYSTEM_ID
+		br.BootRecordBody.BootSystemUse = [descriptor.BOOT_SYSTEM_USE_SIZE]byte{}
+		binary.LittleEndian.PutUint32(br.BootRecordBody.BootSystemUse[0:4], layout.bootCatalogSector)
+		br.BootRecordBody.ObjectLocation = int64(layout.bootRecordSector) * consts.ISO9660_SECTOR_SIZE
+		br.BootRecordBody.ObjectSize = consts.ISO9660_SECTOR_SIZE
+
+		iso.elTorito.ObjectLocation = int64(layout.bootCatalogSector) * consts.ISO9660_SECTOR_SIZE
+		iso.elTorito.ObjectSize = consts.ISO9660_SECTOR_SIZE
+	}
 
 	// Update the SVD cross-references for the Joliet hierarchy.
 	if joliet {

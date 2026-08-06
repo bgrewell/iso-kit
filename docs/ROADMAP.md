@@ -147,11 +147,26 @@ Goal: proper extension support with spec-compliant serialization.
   - Created images opt in with `WithJolietEnabled(true)`; opened images
     preserve Joliet when the source had it; verified with xorriso
     (`-read_fs norock` shows the Joliet tree with Unicode names)
-- [ ] Fix El Torito entry field offsets to match specification
-  - Byte 0 = Boot Indicator, byte 1 = Boot Media Type, bytes 2-3 = Load Segment
-- [ ] Fix El Torito marshal for multi-boot catalogs with section headers
-- [ ] Implement Boot Information Table support (56-byte table at offset 8)
-- [ ] Integrate El Torito into Create/Save pipeline
+- [x] Fix El Torito entry field offsets to match specification
+  - Byte 0 = Boot Indicator, byte 1 = Boot Media Type, bytes 2-3 = Load
+    Segment, byte 4 = System Type; platform now sourced from the validation
+    entry / section headers instead of misread from the media type byte
+- [x] Fix El Torito marshal for multi-boot catalogs with section headers
+  - Proper validation entry (platform byte, ID string at bytes 4-27,
+    zero-sum checksum); additional entries grouped into 0x90/0x91 sections
+    by platform (BIOS default + EFI section verified with xorriso)
+- [x] Implement Boot Information Table support (56-byte table at offset 8)
+  - Opt-in per entry (`BootInfoTable: true`); PVD LBA, image LBA/length,
+    and word-sum checksum patched at save; recognized by xorriso as
+    `boot-info-table`
+- [x] Integrate El Torito into Create/Save pipeline
+  - `AddBootImage(BootImageConfig)` registers tree files as boot entries;
+    boot record written at sector 17, catalog sector allocated by Pack
+  - Opened bootable images preserve their catalog on modify-save: entries
+    are matched to relocated tree files by source extent, with a raw
+    sector-copy fallback for hidden boot images
+  - Also fixed a uint16 overflow in BuildBootImageEntries sizing for boot
+    images over 128 KB
 - [ ] Wire character validation into descriptor write path
 - [ ] Implement ISO 9660 filename validation (Level 1/2/3)
   - Partially covered by the Rock Ridge identifier mangler; strict
