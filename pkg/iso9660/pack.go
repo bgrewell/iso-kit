@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bgrewell/iso-kit/pkg/consts"
+	"github.com/bgrewell/iso-kit/pkg/iso9660/descriptor"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/directory"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/extensions"
 	"github.com/bgrewell/iso-kit/pkg/iso9660/pathtable"
@@ -154,13 +155,23 @@ type dirPlan struct {
 	children map[*tree.Node]*recordPlan
 }
 
+// extentRef resolves the extent location and size a directory record
+// should reference for a node. The primary and Joliet hierarchies share
+// file extents but keep separate directory extents.
+type extentRef func(node *tree.Node) (location, size uint32)
+
 // packLayout holds the sector assignments produced by Pack.
 type packLayout struct {
 	pvdSector        uint32
+	svdSector        uint32
 	terminatorSector uint32
 	pathTableLSector uint32
 	pathTableMSector uint32
 	pathTableSize    uint32
+	// Joliet hierarchy sectors (meaningful only when joliet is true).
+	jolietPathTableLSector uint32
+	jolietPathTableMSector uint32
+	jolietPathTableSize    uint32
 	// Continuation area region for Rock Ridge data that does not fit
 	// inline (always at least one sector when Rock Ridge is enabled, for
 	// the ER entry).
@@ -168,6 +179,7 @@ type packLayout struct {
 	contSectors    uint32
 	totalSectors   uint32
 	rockRidge      bool
+	joliet         bool
 	// dirs is the breadth-first directory list; index+1 is each
 	// directory's path table number.
 	dirs []*tree.Node
@@ -176,8 +188,29 @@ type packLayout struct {
 	// identifiers maps every node to its on-disk identifier (path table
 	// and directory records must agree).
 	identifiers map[*tree.Node]string
+	// Joliet record plans, UCS-2 identifiers, and directory extent
+	// locations/sizes (file extents are shared with the primary
+	// hierarchy).
+	jolietPlans       map[*tree.Node]*dirPlan
+	jolietIdentifiers map[*tree.Node]string
+	jolietDirLocation map[*tree.Node]uint32
+	jolietDirSize     map[*tree.Node]uint32
 	// files is every regular file node in tree walk order.
 	files []*tree.Node
+}
+
+// primaryRef resolves extent references for the primary hierarchy.
+func (l *packLayout) primaryRef(node *tree.Node) (uint32, uint32) {
+	return node.PackedLocation, node.PackedSize
+}
+
+// jolietRef resolves extent references for the Joliet hierarchy:
+// directories use the Joliet extent, files share the primary extents.
+func (l *packLayout) jolietRef(node *tree.Node) (uint32, uint32) {
+	if node.IsDir() {
+		return l.jolietDirLocation[node], l.jolietDirSize[node]
+	}
+	return node.PackedLocation, node.PackedSize
 }
 
 // rockRidgeWriteEnabled reports whether the rebuilt image should carry
@@ -410,22 +443,92 @@ func assignContinuationOffsets(dirs []*tree.Node, plans map[*tree.Node]*dirPlan,
 	return block + 1
 }
 
+// buildJolietPlans computes the record plans for the Joliet hierarchy:
+// UCS-2 identifiers, no system use data.
+func buildJolietPlans(dirs []*tree.Node) (map[*tree.Node]*dirPlan, map[*tree.Node]string) {
+	plans := make(map[*tree.Node]*dirPlan, len(dirs))
+	identifiers := make(map[*tree.Node]string)
+
+	for _, dir := range dirs {
+		dp := &dirPlan{
+			dot:      &recordPlan{identifier: "\x00"},
+			dotdot:   &recordPlan{identifier: "\x01"},
+			children: map[*tree.Node]*recordPlan{},
+		}
+		plans[dir] = dp
+
+		children := dir.Children()
+		ids := assignJolietIdentifiers(children)
+		for _, child := range children {
+			identifiers[child] = ids[child]
+			dp.children[child] = &recordPlan{identifier: ids[child]}
+		}
+	}
+	return plans, identifiers
+}
+
+// jolietWriteEnabled reports whether the rebuilt image should carry a
+// Joliet hierarchy: created images follow the create option; opened
+// images preserve Joliet when the source had a Joliet SVD.
+func (iso *ISO9660) jolietWriteEnabled() bool {
+	if iso.createOptions != nil {
+		return iso.createOptions.JolietEnabled
+	}
+	if iso.volumeDescriptorSet != nil {
+		for _, svd := range iso.volumeDescriptorSet.Supplementary {
+			if svd.IsJoliet() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// jolietSVD returns the SVD to update for the Joliet hierarchy, creating
+// one (mirroring the PVD's identity fields) when the image has none.
+func (iso *ISO9660) jolietSVD() *descriptor.SupplementaryVolumeDescriptor {
+	for _, svd := range iso.volumeDescriptorSet.Supplementary {
+		if svd.IsJoliet() {
+			return svd
+		}
+	}
+	pvd := iso.volumeDescriptorSet.Primary
+	svd := &descriptor.SupplementaryVolumeDescriptor{
+		VolumeDescriptorHeader: descriptor.VolumeDescriptorHeader{
+			VolumeDescriptorType:    descriptor.TYPE_SUPPLEMENTARY_DESCRIPTOR,
+			StandardIdentifier:      consts.ISO9660_STD_IDENTIFIER,
+			VolumeDescriptorVersion: consts.ISO9660_VOLUME_DESC_VERSION,
+		},
+		SupplementaryVolumeDescriptorBody: descriptor.SupplementaryVolumeDescriptorBody{
+			VolumeIdentifier:              pvd.VolumeIdentifier(),
+			DataPreparerIdentifier:        pvd.DataPreparerIdentifier(),
+			VolumeCreationDateAndTime:     pvd.VolumeCreationDateTime(),
+			VolumeModificationDateAndTime: pvd.VolumeModificationDateTime(),
+			FileStructureVersion:          1,
+			Logger:                        iso.logger,
+		},
+	}
+	copy(svd.EscapeSequences[:], consts.JOLIET_LEVEL_3_ESCAPE)
+	iso.volumeDescriptorSet.Supplementary = append(iso.volumeDescriptorSet.Supplementary, svd)
+	return svd
+}
+
 // Pack assigns a sector location to every structure in the image: volume
 // descriptors, path tables, Rock Ridge continuation areas, directory
-// extents, and file extents. It updates the PVD's size and location
-// cross-references so a subsequent Save writes a consistent image. The
-// layout is:
+// extents, and file extents. It updates the PVD's (and, with Joliet, the
+// SVD's) size and location cross-references so a subsequent Save writes a
+// consistent image. The layout is:
 //
 //	sectors 0-15   system area
 //	sector  16     primary volume descriptor
-//	sector  17     volume descriptor set terminator
-//	next           L path table, then M path table
+//	next           supplementary (Joliet) volume descriptor, when enabled
+//	next           volume descriptor set terminator
+//	next           primary L path table, then M path table
+//	next           Joliet L and M path tables, when enabled
 //	next           Rock Ridge continuation area (when enabled)
-//	next           directory extents in breadth-first order (root first)
-//	next           file extents
-//
-// Note: supplementary (Joliet) descriptors are not yet written; a source
-// image's SVDs are dropped from the rebuilt output.
+//	next           primary directory extents in breadth-first order
+//	next           Joliet directory extents, when enabled
+//	next           file extents (shared by both hierarchies)
 func (iso *ISO9660) Pack() error {
 	if iso.root == nil {
 		return fmt.Errorf("no directory tree to pack")
@@ -436,6 +539,7 @@ func (iso *ISO9660) Pack() error {
 	}
 
 	rockRidge := iso.rockRidgeWriteEnabled()
+	joliet := iso.jolietWriteEnabled()
 	dirs := iso.root.Directories()
 	plans, identifiers, err := buildPlans(dirs, rockRidge)
 	if err != nil {
@@ -443,18 +547,31 @@ func (iso *ISO9660) Pack() error {
 	}
 
 	layout := &packLayout{
-		pvdSector:        consts.ISO9660_SYSTEM_AREA_SECTORS,
-		terminatorSector: consts.ISO9660_SYSTEM_AREA_SECTORS + 1,
-		rockRidge:        rockRidge,
-		dirs:             dirs,
-		plans:            plans,
-		identifiers:      identifiers,
+		pvdSector:   consts.ISO9660_SYSTEM_AREA_SECTORS,
+		rockRidge:   rockRidge,
+		joliet:      joliet,
+		dirs:        dirs,
+		plans:       plans,
+		identifiers: identifiers,
 	}
+
+	descriptorSector := layout.pvdSector + 1
+	if joliet {
+		layout.svdSector = descriptorSector
+		descriptorSector++
+		layout.jolietPlans, layout.jolietIdentifiers = buildJolietPlans(dirs)
+		layout.jolietDirLocation = make(map[*tree.Node]uint32, len(dirs))
+		layout.jolietDirSize = make(map[*tree.Node]uint32, len(dirs))
+	}
+	layout.terminatorSector = descriptorSector
 
 	// Directory extent sizes are independent of location, so they can be
 	// computed before sectors are assigned.
 	for _, dir := range dirs {
 		dir.PackedSize = directoryExtentSize(dir, plans[dir])
+		if joliet {
+			layout.jolietDirSize[dir] = directoryExtentSize(dir, layout.jolietPlans[dir])
+		}
 	}
 	layout.pathTableSize = pathTableSize(dirs, identifiers)
 
@@ -463,6 +580,14 @@ func (iso *ISO9660) Pack() error {
 	next += sectorsFor(layout.pathTableSize)
 	layout.pathTableMSector = next
 	next += sectorsFor(layout.pathTableSize)
+
+	if joliet {
+		layout.jolietPathTableSize = pathTableSize(dirs, layout.jolietIdentifiers)
+		layout.jolietPathTableLSector = next
+		next += sectorsFor(layout.jolietPathTableSize)
+		layout.jolietPathTableMSector = next
+		next += sectorsFor(layout.jolietPathTableSize)
+	}
 
 	// The continuation region's size is location-independent; assign its
 	// base here and lay chunks into it.
@@ -473,6 +598,12 @@ func (iso *ISO9660) Pack() error {
 	for _, dir := range dirs {
 		dir.PackedLocation = next
 		next += sectorsFor(dir.PackedSize)
+	}
+	if joliet {
+		for _, dir := range dirs {
+			layout.jolietDirLocation[dir] = next
+			next += sectorsFor(layout.jolietDirSize[dir])
+		}
 	}
 
 	err = iso.root.Walk(func(node *tree.Node) error {
@@ -512,7 +643,30 @@ func (iso *ISO9660) Pack() error {
 
 	// The root directory record embedded in the PVD points at the root
 	// extent. It carries no system use data.
-	pvd.RootDirectoryRecord = buildDirectoryRecord(iso.root, "\x00", nil, iso.root)
+	pvd.RootDirectoryRecord = buildDirectoryRecord(iso.root, "\x00", nil, layout.primaryRef)
+
+	// Update the SVD cross-references for the Joliet hierarchy.
+	if joliet {
+		svd := iso.jolietSVD()
+		svd.VolumeSpaceSize = layout.totalSectors
+		svd.SupplementaryVolumeDescriptorBody.PathTableSize = layout.jolietPathTableSize
+		svd.LocationOfTypeLPathTable = layout.jolietPathTableLSector
+		svd.LocationOfOptionalTypeLPathTable = 0
+		svd.LocationOfTypeMPathTable = layout.jolietPathTableMSector
+		svd.LocationOfOptionalTypeMPathTable = 0
+		svd.ObjectLocation = int64(layout.svdSector) * consts.ISO9660_SECTOR_SIZE
+		svd.SupplementaryVolumeDescriptorBody.ObjectSize = consts.ISO9660_SECTOR_SIZE
+		if svd.LogicalBlockSize == 0 {
+			svd.LogicalBlockSize = consts.ISO9660_SECTOR_SIZE
+		}
+		if svd.VolumeSetSize == 0 {
+			svd.VolumeSetSize = 1
+		}
+		if svd.SupplementaryVolumeDescriptorBody.VolumeSequenceNumber == 0 {
+			svd.SupplementaryVolumeDescriptorBody.VolumeSequenceNumber = 1
+		}
+		svd.RootDirectoryRecord = buildDirectoryRecord(iso.root, "\x00", nil, layout.jolietRef)
+	}
 
 	iso.layout = layout
 	iso.isPacked = true
@@ -529,14 +683,14 @@ func recordingTime(t time.Time) time.Time {
 }
 
 // buildDirectoryRecord constructs the on-disk directory record describing
-// target, using the given identifier and system use field. The record's
-// extent fields come from target's packed location and size, so Pack must
-// run first.
-func buildDirectoryRecord(target *tree.Node, identifier string, systemUse []byte, timeSource *tree.Node) *directory.DirectoryRecord {
+// target with the given extent reference. Pack must run first so the
+// resolver returns assigned locations.
+func buildDirectoryRecord(target *tree.Node, identifier string, systemUse []byte, ref extentRef) *directory.DirectoryRecord {
+	location, size := ref(target)
 	return &directory.DirectoryRecord{
-		LocationOfExtent:       target.PackedLocation,
-		DataLength:             target.PackedSize,
-		RecordingDateAndTime:   recordingTime(timeSource.ModTime()),
+		LocationOfExtent:       location,
+		DataLength:             size,
+		RecordingDateAndTime:   recordingTime(target.ModTime()),
 		FileFlags:              directory.FileFlags{Directory: target.IsDir()},
 		VolumeSequenceNumber:   1,
 		LengthOfFileIdentifier: uint8(len(identifier)),
@@ -547,13 +701,15 @@ func buildDirectoryRecord(target *tree.Node, identifier string, systemUse []byte
 
 // marshalDirectoryExtent serializes a directory's extent: the "." and ".."
 // records followed by one record per child, zero-padding whenever a record
-// would cross a sector boundary. The result is exactly dir.PackedSize bytes.
-func marshalDirectoryExtent(dir *tree.Node, dp *dirPlan) ([]byte, error) {
-	buf := make([]byte, dir.PackedSize)
+// would cross a sector boundary. extentSize is the directory's extent size
+// in the hierarchy being written; ref resolves each record's extent
+// pointer.
+func marshalDirectoryExtent(dir *tree.Node, dp *dirPlan, extentSize uint32, ref extentRef) ([]byte, error) {
+	buf := make([]byte, extentSize)
 	offset := 0
 
 	err := dp.eachPlan(dir, func(target *tree.Node, plan *recordPlan) error {
-		rec := buildDirectoryRecord(target, plan.identifier, plan.systemUse(), target)
+		rec := buildDirectoryRecord(target, plan.identifier, plan.systemUse(), ref)
 		data, err := rec.Marshal()
 		if err != nil {
 			return fmt.Errorf("failed to marshal directory record %q in %q: %w",
@@ -564,7 +720,7 @@ func marshalDirectoryExtent(dir *tree.Node, dp *dirPlan) ([]byte, error) {
 		}
 		if offset+len(data) > len(buf) {
 			return fmt.Errorf("directory extent overflow in %q: computed size %d too small",
-				dir.FullPath(), dir.PackedSize)
+				dir.FullPath(), extentSize)
 		}
 		copy(buf[offset:], data)
 		offset += len(data)
@@ -597,35 +753,53 @@ func (iso *ISO9660) marshalContinuationArea() []byte {
 	return buf
 }
 
-// buildPathTables produces the L (little-endian) and M (big-endian) path
-// tables from the packed directory list. Directory numbering follows the
-// breadth-first order of layout.dirs, so a directory's path table number is
-// its index plus one.
-func (iso *ISO9660) buildPathTables() (*pathtable.PathTable, *pathtable.PathTable, error) {
-	if iso.layout == nil {
-		return nil, nil, fmt.Errorf("image is not packed")
-	}
-
+// buildPathTablePair produces the L (little-endian) and M (big-endian)
+// path tables for one hierarchy. Directory numbering follows the
+// breadth-first order of the packed directory list, so a directory's path
+// table number is its index plus one.
+func (iso *ISO9660) buildPathTablePair(source string, identifiers map[*tree.Node]string, ref extentRef, lSector, mSector, size uint32) (*pathtable.PathTable, *pathtable.PathTable) {
 	dirNumber := make(map[*tree.Node]uint16, len(iso.layout.dirs))
 	for i, dir := range iso.layout.dirs {
 		dirNumber[dir] = uint16(i + 1)
 	}
 
-	ptL := pathtable.NewEmptyPathTable("Primary", true)
-	ptM := pathtable.NewEmptyPathTable("Primary", false)
+	ptL := pathtable.NewEmptyPathTable(source, true)
+	ptM := pathtable.NewEmptyPathTable(source, false)
 	for _, dir := range iso.layout.dirs {
 		identifier := "\x00"
 		parentNumber := uint16(1)
 		if !dir.IsRoot() {
-			identifier = iso.layout.identifiers[dir]
+			identifier = identifiers[dir]
 			parentNumber = dirNumber[dir.Parent()]
 		}
-		ptL.AddRecord(identifier, dir.PackedLocation, parentNumber)
-		ptM.AddRecord(identifier, dir.PackedLocation, parentNumber)
+		location, _ := ref(dir)
+		ptL.AddRecord(identifier, location, parentNumber)
+		ptM.AddRecord(identifier, location, parentNumber)
 	}
 
-	ptL.SetLocation(iso.layout.pathTableLSector, iso.layout.pathTableSize)
-	ptM.SetLocation(iso.layout.pathTableMSector, iso.layout.pathTableSize)
+	ptL.SetLocation(lSector, size)
+	ptM.SetLocation(mSector, size)
 
+	return ptL, ptM
+}
+
+// buildPathTables produces the primary hierarchy's L and M path tables.
+func (iso *ISO9660) buildPathTables() (*pathtable.PathTable, *pathtable.PathTable, error) {
+	if iso.layout == nil {
+		return nil, nil, fmt.Errorf("image is not packed")
+	}
+	ptL, ptM := iso.buildPathTablePair("Primary", iso.layout.identifiers, iso.layout.primaryRef,
+		iso.layout.pathTableLSector, iso.layout.pathTableMSector, iso.layout.pathTableSize)
+	return ptL, ptM, nil
+}
+
+// buildJolietPathTables produces the Joliet hierarchy's L and M path
+// tables with UCS-2 identifiers.
+func (iso *ISO9660) buildJolietPathTables() (*pathtable.PathTable, *pathtable.PathTable, error) {
+	if iso.layout == nil || !iso.layout.joliet {
+		return nil, nil, fmt.Errorf("image is not packed with Joliet")
+	}
+	ptL, ptM := iso.buildPathTablePair("Supplementary", iso.layout.jolietIdentifiers, iso.layout.jolietRef,
+		iso.layout.jolietPathTableLSector, iso.layout.jolietPathTableMSector, iso.layout.jolietPathTableSize)
 	return ptL, ptM, nil
 }

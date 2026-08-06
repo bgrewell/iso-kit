@@ -88,9 +88,9 @@ Goal: create and modify ISOs. Largest and most architecturally significant phase
   - Zero-pads at sector boundaries (records never cross boundaries)
 - [x] Implement path table builder from directory tree (`pack.go: buildPathTables`)
   - Breadth-first walk, sequential parent numbers, L-type and M-type output
-- [ ] Promote SVD numeric fields from raw byte arrays to typed values
-  - VolumeSpaceSize, VolumeSetSize, etc. — match PVD pattern
-  - Required for Pack() to update SVD programmatically (needed for Joliet write, P2)
+- [x] Promote SVD numeric fields from raw byte arrays to typed values
+  - VolumeSpaceSize (uint32), VolumeSetSize/VolumeSequenceNumber/
+    LogicalBlockSize (uint16), both-byte-order encoding matching the PVD
 - [x] Implement `Pack()` — the sector layout engine
   - Assigns sector locations: PVD, terminator, path tables, directory extents
     (breadth-first), file data
@@ -106,8 +106,9 @@ Goal: create and modify ISOs. Largest and most architecturally significant phase
     created/modified images
   - Pending files written from memory, existing files streamed from isoReader
     (relocation-safe)
-- [ ] Fix Joliet directory record marshal (UCS-2 re-encoding)
-  - When `dr.Joliet` is true, encode FileIdentifier as UCS-2 (with P2 Joliet work)
+- [x] Fix Joliet directory record marshal (UCS-2 re-encoding)
+  - Identifiers are pre-encoded to UCS-2 in the layout engine's Joliet
+    record plans; the record marshal writes them byte-exact
 - [ ] Add `VolumeDescriptorSet` methods (WriteTo, Validate)
 - [ ] Implement `VolumePartitionDescriptor` Marshal/Unmarshal
 - [x] End-to-end Create→AddFile→Save→Open verification test
@@ -139,8 +140,13 @@ Goal: proper extension support with spec-compliant serialization.
     (`WithCreateRockRidgeEnabled(false)` to disable); opened images keep RR
     iff the source had it
   - Verified with xorriso: POSIX names, PX modes, and symlinks recognized
-- [ ] Complete Joliet write support
-  - Separate UCS-2 directory tree, separate path tables, 64-char filename validation
+- [x] Complete Joliet write support
+  - SVD written at sector 17; separate UCS-2 directory extents and path
+    tables sharing file data with the primary hierarchy; 64-unit name
+    sanitization/truncation with ~N dedupe
+  - Created images opt in with `WithJolietEnabled(true)`; opened images
+    preserve Joliet when the source had it; verified with xorriso
+    (`-read_fs norock` shows the Joliet tree with Unicode names)
 - [ ] Fix El Torito entry field offsets to match specification
   - Byte 0 = Boot Indicator, byte 1 = Boot Media Type, bytes 2-3 = Load Segment
 - [ ] Fix El Torito marshal for multi-boot catalogs with section headers

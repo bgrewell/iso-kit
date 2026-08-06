@@ -258,10 +258,6 @@ func Create(name string, opts ...option.CreateOption) (*ISO9660, error) {
 		isPacked: false,
 	}
 
-	if createOptions.JolietEnabled {
-		iso.logger.Info("WARNING: Joliet output is not yet supported; the image will be written without a supplementary volume descriptor")
-	}
-
 	if createOptions.RootDir != "" {
 		if err := iso.AddLocalDirectory(createOptions.RootDir, "/"); err != nil {
 			return nil, err
@@ -998,9 +994,6 @@ func (iso *ISO9660) saveRebuild(writer io.WriterAt) error {
 	if iso.volumeDescriptorSet.Boot != nil || iso.elTorito != nil {
 		iso.logger.Info("WARNING: El Torito boot structures are not yet supported in rebuilt images; the output will not be bootable")
 	}
-	if len(iso.volumeDescriptorSet.Supplementary) > 0 {
-		iso.logger.Info("WARNING: Joliet output is not yet supported; the supplementary volume descriptor is dropped from the rebuilt image")
-	}
 
 	if err := iso.Pack(); err != nil {
 		return fmt.Errorf("failed to pack image: %w", err)
@@ -1018,6 +1011,17 @@ func (iso *ISO9660) saveRebuild(writer io.WriterAt) error {
 	}
 	if _, err := writer.WriteAt(pvdBytes, int64(iso.layout.pvdSector)*consts.ISO9660_SECTOR_SIZE); err != nil {
 		return fmt.Errorf("failed to write primary volume descriptor: %w", err)
+	}
+
+	// 2b. Supplementary (Joliet) volume descriptor.
+	if iso.layout.joliet {
+		svdBytes, err := iso.jolietSVD().Marshal()
+		if err != nil {
+			return fmt.Errorf("failed to marshal supplementary volume descriptor: %w", err)
+		}
+		if _, err := writer.WriteAt(svdBytes, int64(iso.layout.svdSector)*consts.ISO9660_SECTOR_SIZE); err != nil {
+			return fmt.Errorf("failed to write supplementary volume descriptor: %w", err)
+		}
 	}
 
 	// 3. Volume descriptor set terminator.
@@ -1054,6 +1058,26 @@ func (iso *ISO9660) saveRebuild(writer io.WriterAt) error {
 	}
 	iso.pathTables = []*pathtable.PathTable{ptL, ptM}
 
+	// 4b. Joliet path tables.
+	if iso.layout.joliet {
+		jptL, jptM, err := iso.buildJolietPathTables()
+		if err != nil {
+			return err
+		}
+		for _, pt := range []*pathtable.PathTable{jptL, jptM} {
+			data, err := pt.Marshal()
+			if err != nil {
+				return fmt.Errorf("failed to marshal Joliet path table: %w", err)
+			}
+			padded := make([]byte, sectorsFor(uint32(len(data)))*consts.ISO9660_SECTOR_SIZE)
+			copy(padded, data)
+			if _, err := writer.WriteAt(padded, pt.Offset()); err != nil {
+				return fmt.Errorf("failed to write Joliet path table: %w", err)
+			}
+		}
+		iso.pathTables = append(iso.pathTables, jptL, jptM)
+	}
+
 	// 5. Rock Ridge continuation area (ER entry and overflow), if any.
 	if contData := iso.marshalContinuationArea(); contData != nil {
 		contOffset := int64(iso.layout.contBaseSector) * consts.ISO9660_SECTOR_SIZE
@@ -1062,14 +1086,27 @@ func (iso *ISO9660) saveRebuild(writer io.WriterAt) error {
 		}
 	}
 
-	// 6. Directory extents in breadth-first order.
+	// 6. Directory extents in breadth-first order: primary hierarchy,
+	// then the Joliet hierarchy.
 	for _, dir := range iso.layout.dirs {
-		data, err := marshalDirectoryExtent(dir, iso.layout.plans[dir])
+		data, err := marshalDirectoryExtent(dir, iso.layout.plans[dir], dir.PackedSize, iso.layout.primaryRef)
 		if err != nil {
 			return err
 		}
 		if _, err := writer.WriteAt(data, int64(dir.PackedLocation)*consts.ISO9660_SECTOR_SIZE); err != nil {
 			return fmt.Errorf("failed to write directory extent for %q: %w", dir.FullPath(), err)
+		}
+	}
+	if iso.layout.joliet {
+		for _, dir := range iso.layout.dirs {
+			data, err := marshalDirectoryExtent(dir, iso.layout.jolietPlans[dir], iso.layout.jolietDirSize[dir], iso.layout.jolietRef)
+			if err != nil {
+				return err
+			}
+			location := int64(iso.layout.jolietDirLocation[dir]) * consts.ISO9660_SECTOR_SIZE
+			if _, err := writer.WriteAt(data, location); err != nil {
+				return fmt.Errorf("failed to write Joliet directory extent for %q: %w", dir.FullPath(), err)
+			}
 		}
 	}
 
